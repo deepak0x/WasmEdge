@@ -9,6 +9,7 @@
 #include "common/errcode.h"
 #include "common/types.h"
 #include "host/wasi/wasimodule.h"
+#include "host/wasi_preview2/wasip2.h"
 #include "plugin/plugin.h"
 #include "llvm/compiler.h"
 #include "llvm/jit.h"
@@ -61,10 +62,15 @@ void VM::unsafeLoadBuiltInHosts() {
   // Load the built-in host modules from configuration.
   // TODO: This will be extended for versioned WASI in the future.
   cleanupModInstContainer(BuiltInModInsts);
+  BuiltInCompInsts.clear();
   if (Conf.hasHostRegistration(HostRegistration::Wasi)) {
     std::unique_ptr<Runtime::Instance::ModuleInstance> WasiMod =
         std::make_unique<Host::WasiModule>();
     BuiltInModInsts.insert({HostRegistration::Wasi, std::move(WasiMod)});
+    if (Conf.hasProposal(Proposal::Component)) {
+      // WASI preview 2 interfaces as host component instances.
+      BuiltInCompInsts = Host::WASIPreview2::createInterfaces();
+    }
   }
 }
 
@@ -94,6 +100,9 @@ void VM::unsafeRegisterBuiltInHosts() {
   // Register all created WASI host modules.
   for (auto &It : BuiltInModInsts) {
     ExecutorEngine.registerModule(StoreRef, *(It.second.get()));
+  }
+  for (auto &It : BuiltInCompInsts) {
+    ExecutorEngine.registerComponent(StoreRef, *(It.get()));
   }
 }
 

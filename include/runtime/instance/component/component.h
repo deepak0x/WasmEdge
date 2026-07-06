@@ -290,6 +290,33 @@ public:
     Types.emplace_back(nullptr);
     TypeResources.emplace_back(nullptr);
   }
+  // Host-built type entry: the instance owns the definition.
+  uint32_t addOwnedType(AST::Component::DefType &&Ty) noexcept {
+    OwnedDefTypes.push_back(
+        std::make_unique<AST::Component::DefType>(std::move(Ty)));
+    addType(*OwnedDefTypes.back());
+    return static_cast<uint32_t>(Types.size() - 1);
+  }
+  // Host-defined resource type with a host destructor.
+  uint32_t addHostResourceType(std::function<void(uint32_t)> Dtor) noexcept {
+    OwnedResourceTypes.push_back(std::make_unique<ResourceTypeRT>());
+    OwnedResourceTypes.back()->Impl = this;
+    OwnedResourceTypes.back()->HostDtor = std::move(Dtor);
+    Types.emplace_back(nullptr);
+    TypeResources.emplace_back(OwnedResourceTypes.back().get());
+    return static_cast<uint32_t>(Types.size() - 1);
+  }
+  uint32_t getTypeCount() const noexcept {
+    return static_cast<uint32_t>(Types.size());
+  }
+  // Host component function registered under an export name.
+  void
+  addHostFunc(std::string_view Name,
+              std::unique_ptr<Component::FunctionInstance> &&Inst) noexcept {
+    addFunction(std::move(Inst));
+    exportFunction(Name, static_cast<uint32_t>(FuncInsts.size() - 1));
+  }
+
   // A locally-defined resource type: mints the runtime identity.
   const ResourceTypeRT *addResourceType(const AST::Component::DefType &Ty,
                                         FunctionInstance *Dtor) noexcept {
@@ -538,6 +565,7 @@ private:
   std::map<std::string, const AST::Module *, std::less<>> ExpCoreMods;
   std::vector<const ResourceTypeRT *> TypeResources;
   std::vector<std::unique_ptr<ResourceTypeRT>> OwnedResourceTypes;
+  std::vector<std::unique_ptr<AST::Component::DefType>> OwnedDefTypes;
   mutable std::vector<HandleSlot> Handles;
   mutable std::vector<uint32_t> FreeSlots;
 

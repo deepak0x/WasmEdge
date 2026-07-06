@@ -39,7 +39,7 @@ Expect<std::vector<ValVariant>> Executor::convValsToCoreWASM(
     Runtime::Instance::MemoryInstance *MemInst,
     const Runtime::Instance::ComponentInstance *CompInst, StringEncoding Enc) {
   // Wrapper over the spec's lower_flat_values (CanonicalABI.md L3212-3232).
-  CanonicalABI::CanonCtx Cx{this, MemInst, RFuncInst, CompInst, {}, Enc};
+  CanonicalABI::CanonCtx Cx{this, MemInst, RFuncInst, CompInst, {}, {}, Enc};
   return CanonicalABI::lowerFlatValues(Cx, Vals, ValTypes,
                                        CanonicalABI::MaxFlatParams);
 }
@@ -51,7 +51,7 @@ Executor::convValsToComponent(
     Runtime::Instance::MemoryInstance *MemInst,
     const Runtime::Instance::ComponentInstance *CompInst, StringEncoding Enc) {
   // Wrapper over the spec's lift_flat_values (CanonicalABI.md L3193-3202).
-  CanonicalABI::CanonCtx Cx{this, MemInst, nullptr, CompInst, {}, Enc};
+  CanonicalABI::CanonCtx Cx{this, MemInst, nullptr, CompInst, {}, {}, Enc};
   CanonicalABI::FlatIter VI(CoreVals);
   EXPECTED_TRY(auto Lifted,
                CanonicalABI::liftFlatValues(Cx, VI, ValTypes,
@@ -117,7 +117,8 @@ Executor::instantiate(Runtime::Instance::ComponentInstance &CompInst,
       // time rather than at call time. Captures FlatSig so the post-return
       // signature check can compare against flatten_functype({}, $ft,
       // 'lift').results (spec L3292).
-      CanonicalABI::CanonCtx PrefCx{nullptr, nullptr, nullptr, &CompInst, {}};
+      CanonicalABI::CanonCtx PrefCx{nullptr,   nullptr, nullptr,
+                                    &CompInst, {},      {}};
       EXPECTED_TRY(auto FlatSig,
                    CanonicalABI::flattenFuncType(PrefCx, DType->getFuncType(),
                                                  /*IsLift=*/true));
@@ -198,12 +199,28 @@ Executor::instantiate(Runtime::Instance::ComponentInstance &CompInst,
       }
 
       auto *Callee = CompInst.getFunction(Canon.getIndex());
+      if (Callee == nullptr) {
+        spdlog::error(ErrCode::Value::ComponentNotImplInstantiate);
+        spdlog::error("    canon lower: function {} not found"sv,
+                      Canon.getIndex());
+        return Unexpect(ErrCode::Value::ComponentNotImplInstantiate);
+      }
       const auto &CFT = Callee->getFuncType();
 
       // Pre-flight the lower-direction flat ABI so unsupported shapes (async,
       // gated types) fail at instantiation time. flattenFuncType doesn't need
-      // Mem / Realloc to compute the signature.
-      CanonicalABI::CanonCtx PrefCx{this, nullptr, nullptr, &CompInst, {}};
+      // Mem / Realloc to compute the signature. The callee's function type
+      // carries type indices of the callee's own instance.
+      CanonicalABI::CanonCtx PrefCx{this, nullptr, nullptr, &CompInst, {}, {}};
+      if (const auto *CalleeComp = Callee->getComponentInstance();
+          CalleeComp != nullptr && CalleeComp != &CompInst) {
+        PrefCx.TypeResolver = [CalleeComp](uint32_t I) {
+          return CalleeComp->getType(I);
+        };
+        PrefCx.ResourceResolver = [CalleeComp](uint32_t I) {
+          return CalleeComp->getTypeResource(I);
+        };
+      }
       EXPECTED_TRY(auto FlatSig,
                    CanonicalABI::flattenFuncType(PrefCx, CFT,
                                                  /*IsLift=*/false));

@@ -23,6 +23,9 @@ using namespace std::literals;
 // Resolve the runtime resource identity for an own/borrow handle type.
 const Runtime::Instance::ComponentInstance::ResourceTypeRT *
 handleResource(const CanonCtx &Cx, uint32_t TypeIdx) noexcept {
+  if (Cx.ResourceResolver) {
+    return Cx.ResourceResolver(TypeIdx);
+  }
   return Cx.CompInst != nullptr ? Cx.CompInst->getTypeResource(TypeIdx)
                                 : nullptr;
 }

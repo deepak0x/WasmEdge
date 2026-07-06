@@ -49,7 +49,18 @@ Expect<void> CanonLowerHostFunc::run(const Runtime::CallingFrame &,
   // Lower-direction CanonCtx: Memory/Realloc come from the canon lower
   // options. Exec is needed by callRealloc inside lower_flat_values when
   // nested strings/lists in results need their own buffer.
-  CanonicalABI::CanonCtx Cx{Exec, Memory, Realloc, CompInst, {}, Enc};
+  CanonicalABI::CanonCtx Cx{Exec, Memory, Realloc, CompInst, {}, {}, Enc};
+  // The callee's function type carries type indices of the callee's
+  // instance; handle tables stay with the caller (CompInst).
+  if (const auto *CalleeComp = Callee->getComponentInstance();
+      CalleeComp != nullptr && CalleeComp != CompInst) {
+    Cx.TypeResolver = [CalleeComp](uint32_t I) {
+      return CalleeComp->getType(I);
+    };
+    Cx.ResourceResolver = [CalleeComp](uint32_t I) {
+      return CalleeComp->getTypeResource(I);
+    };
+  }
 
   // Collect component-level param + result types from the callee.
   const auto &CFT = Callee->getFuncType();

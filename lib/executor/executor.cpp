@@ -235,6 +235,11 @@ Executor::invoke(const Runtime::Instance::Component::FunctionInstance *FuncInst,
     return Unexpect(ErrCode::Value::FuncSigMismatch);
   }
 
+  // Host component functions consume component-level values directly.
+  if (FuncInst->isHostFunction()) {
+    return FuncInst->getHostFunc()(Params);
+  }
+
   // Convert the component params into core WASM params.
   auto *ReallocFuncInst = FuncInst->getAllocFunction();
   auto *MemInst = FuncInst->getMemoryInstance();

@@ -477,6 +477,9 @@ private:
   std::unordered_map<HostRegistration,
                      std::unique_ptr<Runtime::Instance::ModuleInstance>>
       BuiltInModInsts;
+  /// Built-in WASI preview 2 component instances. For component proposal.
+  std::vector<std::unique_ptr<Runtime::Instance::ComponentInstance>>
+      BuiltInCompInsts;
   /// Loaded module instances from plug-ins.
   std::vector<std::unique_ptr<Runtime::Instance::ModuleInstance>>
       PlugInModInsts;
