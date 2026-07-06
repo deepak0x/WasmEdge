@@ -38,7 +38,7 @@ public:
   std::string &getModuleName() noexcept { return ModName; }
   std::string_view getName() const noexcept { return Name; }
   std::string &getName() noexcept { return Name; }
-  CoreImportDesc getImportDesc() const noexcept { return Desc; }
+  const CoreImportDesc &getImportDesc() const noexcept { return Desc; }
   CoreImportDesc &getImportDesc() noexcept { return Desc; }
 
 private:
@@ -54,7 +54,7 @@ class CoreExportDecl {
 public:
   std::string_view getName() const noexcept { return Name; }
   std::string &getName() noexcept { return Name; }
-  CoreImportDesc getImportDesc() const noexcept { return Desc; }
+  const CoreImportDesc &getImportDesc() const noexcept { return Desc; }
   CoreImportDesc &getImportDesc() noexcept { return Desc; }
 
 private:
