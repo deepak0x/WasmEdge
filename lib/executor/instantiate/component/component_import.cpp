@@ -20,15 +20,25 @@ Executor::instantiate(Runtime::StoreManager &StoreMgr,
   for (const auto &Import : ImportSec.getContent()) {
     const auto &Desc = Import.getDesc();
     switch (Desc.getDescType()) {
+    case AST::Component::ExternDesc::DescType::TypeBound:
+      // Type imports fill the type index space; hosts supply no types, so
+      // eq-bound targets are used and abstract resources stay opaque.
+      if (Desc.isEqType()) {
+        CompInst.addTypeWithResource(
+            CompInst.getType(Desc.getTypeIndex()),
+            CompInst.getTypeResource(Desc.getTypeIndex()));
+        break;
+      }
+      CompInst.addDummyType();
+      break;
     case AST::Component::ExternDesc::DescType::CoreType:
     case AST::Component::ExternDesc::DescType::FuncType:
     case AST::Component::ExternDesc::DescType::ValueBound:
-    case AST::Component::ExternDesc::DescType::TypeBound:
     case AST::Component::ExternDesc::DescType::ComponentType:
-      // TODO: COMPONENT - complete the import instantiation.
-      spdlog::error(ErrCode::Value::ComponentNotImplInstantiate);
-      spdlog::error("    incomplete import {} desc types"sv, Import.getName());
-      return Unexpect(ErrCode::Value::ComponentNotImplInstantiate);
+      // No host-side providers for these sorts yet.
+      spdlog::error(ErrCode::Value::UnknownImport);
+      spdlog::error("    import name: {}"sv, Import.getName());
+      return Unexpect(ErrCode::Value::UnknownImport);
     case AST::Component::ExternDesc::DescType::InstanceType: {
       // TODO: COMPONENT - type matching for the instance type.
       auto CompName = Import.getName();
@@ -55,12 +65,54 @@ Executor::instantiate(Runtime::Instance::ComponentImportManager &ImportMgr,
   for (const auto &Import : ImportSec.getContent()) {
     const auto &Desc = Import.getDesc();
     switch (Desc.getDescType()) {
-    case AST::Component::ExternDesc::DescType::CoreType:
-    case AST::Component::ExternDesc::DescType::FuncType:
+    case AST::Component::ExternDesc::DescType::FuncType: {
+      auto *Func = ImportMgr.findFunction(Import.getName());
+      if (unlikely(Func == nullptr)) {
+        spdlog::error(ErrCode::Value::UnknownImport);
+        spdlog::error("    function name: {}"sv, Import.getName());
+        return Unexpect(ErrCode::Value::UnknownImport);
+      }
+      CompInst.addFunction(Func);
+      break;
+    }
+    case AST::Component::ExternDesc::DescType::TypeBound: {
+      // Type imports fill the type index space: an argument-supplied type
+      // when present, otherwise the eq-bound target.
+      const auto *Ty = ImportMgr.findType(Import.getName());
+      const auto *RT = static_cast<
+          const Runtime::Instance::ComponentInstance::ResourceTypeRT *>(
+          ImportMgr.findTypeResource(Import.getName()));
+      if (Ty == nullptr && RT == nullptr && Desc.isEqType()) {
+        CompInst.addTypeWithResource(
+            CompInst.getType(Desc.getTypeIndex()),
+            CompInst.getTypeResource(Desc.getTypeIndex()));
+      } else {
+        CompInst.addTypeWithResource(Ty, RT);
+      }
+      break;
+    }
+    case AST::Component::ExternDesc::DescType::ComponentType: {
+      const auto *C = ImportMgr.findComponent(Import.getName());
+      if (unlikely(C == nullptr)) {
+        spdlog::error(ErrCode::Value::UnknownImport);
+        spdlog::error("    component name: {}"sv, Import.getName());
+        return Unexpect(ErrCode::Value::UnknownImport);
+      }
+      CompInst.addComponent(*C);
+      break;
+    }
+    case AST::Component::ExternDesc::DescType::CoreType: {
+      const auto *M = ImportMgr.findCoreModule(Import.getName());
+      if (unlikely(M == nullptr)) {
+        spdlog::error(ErrCode::Value::UnknownImport);
+        spdlog::error("    core module name: {}"sv, Import.getName());
+        return Unexpect(ErrCode::Value::UnknownImport);
+      }
+      CompInst.addModule(*M);
+      break;
+    }
     case AST::Component::ExternDesc::DescType::ValueBound:
-    case AST::Component::ExternDesc::DescType::TypeBound:
-    case AST::Component::ExternDesc::DescType::ComponentType:
-      // TODO: COMPONENT - complete the import instantiation.
+      // TODO: COMPONENT - value imports.
       spdlog::error(ErrCode::Value::ComponentNotImplInstantiate);
       spdlog::error("    incomplete import {} desc types"sv, Import.getName());
       return Unexpect(ErrCode::Value::ComponentNotImplInstantiate);

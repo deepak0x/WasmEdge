@@ -27,7 +27,13 @@ Executor::instantiate(Runtime::Instance::ComponentInstance &CompInst,
         ImportMgr.exportCoreModuleInstance(
             Arg.getName(), CompInst.getCoreModuleInstance(Arg.getIndex()));
       }
-      const AST::Module &Mod = CompInst.getModule(Expr.getModuleIndex());
+      const AST::Module *ModPtr = CompInst.getModule(Expr.getModuleIndex());
+      if (ModPtr == nullptr) {
+        spdlog::error(ErrCode::Value::ComponentNotImplInstantiate);
+        spdlog::error("    core module {} not found"sv, Expr.getModuleIndex());
+        return Unexpect(ErrCode::Value::ComponentNotImplInstantiate);
+      }
+      const AST::Module &Mod = *ModPtr;
       EXPECTED_TRY(auto NewModInst, instantiate(ImportMgr, Mod));
       CompInst.addCoreModuleInstance(std::move(NewModInst));
     } else {
@@ -126,13 +132,16 @@ Executor::instantiate(Runtime::Instance::ComponentInstance &CompInst,
                 Arg.getName(),
                 CompInst.getCoreModuleInstance(SortIdx.getIdx()));
             break;
+          case AST::Component::Sort::CoreSortType::Module: {
+            const auto *Mod = CompInst.getModule(SortIdx.getIdx());
+            if (Mod != nullptr) {
+              ImportMgr.exportCoreModule(Arg.getName(), Mod);
+            }
+            break;
+          }
           case AST::Component::Sort::CoreSortType::Type:
-          case AST::Component::Sort::CoreSortType::Module:
-            // TODO: COMPONENT - complete the instance instantiation.
-            spdlog::error(ErrCode::Value::ComponentNotImplInstantiate);
-            spdlog::error("    incomplete instantiate (with {})"sv,
-                          Arg.getName());
-            return Unexpect(ErrCode::Value::ComponentNotImplInstantiate);
+            // Core types carry no runtime state.
+            break;
           default:
             assumingUnreachable();
           }
@@ -146,10 +155,20 @@ Executor::instantiate(Runtime::Instance::ComponentInstance &CompInst,
             ImportMgr.exportComponentInstance(
                 Arg.getName(), CompInst.getComponentInstance(SortIdx.getIdx()));
             break;
-          case AST::Component::Sort::SortType::Value:
           case AST::Component::Sort::SortType::Type:
-          case AST::Component::Sort::SortType::Component:
-            // TODO: COMPONENT - complete the instance instantiation.
+            ImportMgr.exportType(Arg.getName(),
+                                 CompInst.getType(SortIdx.getIdx()),
+                                 CompInst.getTypeResource(SortIdx.getIdx()));
+            break;
+          case AST::Component::Sort::SortType::Component: {
+            const auto *C = CompInst.getComponent(SortIdx.getIdx());
+            if (C != nullptr) {
+              ImportMgr.exportComponent(Arg.getName(), C);
+            }
+            break;
+          }
+          case AST::Component::Sort::SortType::Value:
+            // TODO: COMPONENT - value arguments.
             spdlog::error(ErrCode::Value::ComponentNotImplInstantiate);
             spdlog::error("    incomplete instantiate (with {})"sv,
                           Arg.getName());
@@ -159,9 +178,17 @@ Executor::instantiate(Runtime::Instance::ComponentInstance &CompInst,
           }
         }
       }
-      const AST::Component::Component &Comp =
+      const AST::Component::Component *CompPtr =
           CompInst.getComponent(Expr.getComponentIndex());
+      if (CompPtr == nullptr) {
+        spdlog::error(ErrCode::Value::ComponentNotImplInstantiate);
+        spdlog::error("    component {} not found"sv, Expr.getComponentIndex());
+        return Unexpect(ErrCode::Value::ComponentNotImplInstantiate);
+      }
+      const AST::Component::Component &Comp = *CompPtr;
       EXPECTED_TRY(auto NewCompInst, instantiate(ImportMgr, Comp));
+      // Wire the lexical parent for outer-alias resolution.
+      NewCompInst->setParent(&CompInst);
       CompInst.addComponentInstance(std::move(NewCompInst));
     } else {
       // Inline exports case.
@@ -224,10 +251,19 @@ Executor::instantiate(Runtime::Instance::ComponentInstance &CompInst,
             Comp->exportComponentInstance(Exp.getName(), ExpIdx[4]);
             ExpIdx[4]++;
             break;
-          case AST::Component::Sort::SortType::Value:
           case AST::Component::Sort::SortType::Type:
+            Comp->addTypeWithResource(CompInst.getType(Idx),
+                                      CompInst.getTypeResource(Idx));
+            Comp->exportType(Exp.getName(), ExpIdx[2]);
+            ExpIdx[2]++;
+            break;
           case AST::Component::Sort::SortType::Component:
-            // TODO: COMPONENT - complete the instance instantiation.
+            if (const auto *C = CompInst.getComponent(Idx)) {
+              Comp->addComponent(*C);
+            }
+            break;
+          case AST::Component::Sort::SortType::Value:
+            // TODO: COMPONENT - value inline exports.
             spdlog::error(ErrCode::Value::ComponentNotImplInstantiate);
             spdlog::error("    incomplete inline export {}"sv, Exp.getName());
             return Unexpect(ErrCode::Value::ComponentNotImplInstantiate);

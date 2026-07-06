@@ -3,6 +3,7 @@
 
 #include "executor/component/canonical_abi.h"
 #include "executor/component/lower_thunk.h"
+#include "executor/component/resource_thunk.h"
 #include "executor/executor.h"
 
 #include "common/errinfo.h"
@@ -217,7 +218,36 @@ Executor::instantiate(Runtime::Instance::ComponentInstance &CompInst,
     }
     case ComponentCanonOpCode::Resource__new:
     case ComponentCanonOpCode::Resource__drop:
-    case ComponentCanonOpCode::Resource__rep:
+    case ComponentCanonOpCode::Resource__drop_async:
+    case ComponentCanonOpCode::Resource__rep: {
+      const auto *RT = CompInst.getTypeResource(Canon.getIndex());
+      if (RT == nullptr) {
+        spdlog::error(ErrCode::Value::ComponentNotImplInstantiate);
+        spdlog::error("    canon resource built-in: type {} has no runtime "
+                      "resource"sv,
+                      Canon.getIndex());
+        return Unexpect(ErrCode::Value::ComponentNotImplInstantiate);
+      }
+      std::unique_ptr<Runtime::HostFunctionBase> Thunk;
+      std::string_view Name;
+      switch (Canon.getOpCode()) {
+      case ComponentCanonOpCode::Resource__new:
+        Thunk = std::make_unique<CanonResourceNewHostFunc>(&CompInst, RT);
+        Name = "$resource-new"sv;
+        break;
+      case ComponentCanonOpCode::Resource__rep:
+        Thunk = std::make_unique<CanonResourceRepHostFunc>(&CompInst, RT);
+        Name = "$resource-rep"sv;
+        break;
+      default:
+        Thunk =
+            std::make_unique<CanonResourceDropHostFunc>(this, &CompInst, RT);
+        Name = "$resource-drop"sv;
+        break;
+      }
+      CompInst.addCoreHostFunction(std::move(Thunk), Name);
+      break;
+    }
     default:
       spdlog::error(ErrCode::Value::ComponentNotImplInstantiate);
       spdlog::error("    incomplete canonical"sv);

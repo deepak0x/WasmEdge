@@ -18,6 +18,59 @@ namespace WasmEdge {
 namespace Executor {
 namespace CanonicalABI {
 
+namespace {
+using namespace std::literals;
+// Resolve the runtime resource identity for an own/borrow handle type.
+const Runtime::Instance::ComponentInstance::ResourceTypeRT *
+handleResource(const CanonCtx &Cx, uint32_t TypeIdx) noexcept {
+  return Cx.CompInst != nullptr ? Cx.CompInst->getTypeResource(TypeIdx)
+                                : nullptr;
+}
+
+// lift_own: transferring ownership out of the instance removes the handle.
+Expect<uint32_t> liftOwnHandle(const CanonCtx &Cx, uint32_t TypeIdx,
+                               uint32_t Idx) noexcept {
+  const auto *RT = handleResource(Cx, TypeIdx);
+  if (Cx.CompInst == nullptr || RT == nullptr) {
+    // No table context (unit ABI tests): pass the raw value through.
+    return Idx;
+  }
+  auto *Slot = Cx.CompInst->handleGet(Idx);
+  if (Slot == nullptr || Slot->RT != RT || !Slot->Own || Slot->Lends != 0) {
+    spdlog::error(ErrCode::Value::ComponentTrap);
+    spdlog::error("    canonical ABI: invalid own handle {}"sv, Idx);
+    return Unexpect(ErrCode::Value::ComponentTrap);
+  }
+  return Cx.CompInst->handleRemove(Idx)->Rep;
+}
+
+// lift_borrow: the handle stays; the rep travels for the call's duration.
+Expect<uint32_t> liftBorrowHandle(const CanonCtx &Cx, uint32_t TypeIdx,
+                                  uint32_t Idx) noexcept {
+  const auto *RT = handleResource(Cx, TypeIdx);
+  if (Cx.CompInst == nullptr || RT == nullptr) {
+    return Idx;
+  }
+  auto *Slot = Cx.CompInst->handleGet(Idx);
+  if (Slot == nullptr || Slot->RT != RT) {
+    spdlog::error(ErrCode::Value::ComponentTrap);
+    spdlog::error("    canonical ABI: invalid borrow handle {}"sv, Idx);
+    return Unexpect(ErrCode::Value::ComponentTrap);
+  }
+  return Slot->Rep;
+}
+
+// lower_own / lower_borrow: entering an instance inserts a table entry.
+uint32_t lowerHandle(const CanonCtx &Cx, uint32_t TypeIdx, uint32_t Rep,
+                     bool Own) noexcept {
+  const auto *RT = handleResource(Cx, TypeIdx);
+  if (Cx.CompInst == nullptr || RT == nullptr) {
+    return Rep;
+  }
+  return Cx.CompInst->handleAdd(RT, Rep, Own);
+}
+} // namespace
+
 using namespace std::literals;
 
 namespace {
@@ -1465,19 +1518,20 @@ loadDef(const CanonCtx &Cx, uint32_t Ptr,
     return makeComponentVal(EnumVal{Case});
   }
 
-  // lift_own / lift_borrow (L2297-2303 / L2316-2322): resource-table
-  // interaction is not yet implemented; the raw handle is preserved verbatim
-  // so future support can pick it up.
+  // lift_own / lift_borrow (L2297-2303 / L2316-2322): the transported value
+  // carries the representation; the handle leaves (own) or stays (borrow).
   if (T.isOwnTy()) {
     uint32_t H = 0;
     EXPECTED_TRY(Cx.Mem->loadValue<uint32_t>(H, Ptr));
-    return makeComponentVal(OwnVal{H});
+    EXPECTED_TRY(uint32_t Rep, liftOwnHandle(Cx, T.getOwn().Idx, H));
+    return makeComponentVal(OwnVal{Rep});
   }
 
   if (T.isBorrowTy()) {
     uint32_t H = 0;
     EXPECTED_TRY(Cx.Mem->loadValue<uint32_t>(H, Ptr));
-    return makeComponentVal(BorrowVal{H});
+    EXPECTED_TRY(uint32_t Rep, liftBorrowHandle(Cx, T.getBorrow().Idx, H));
+    return makeComponentVal(BorrowVal{Rep});
   }
 
   // stream / future are deferred.
@@ -1765,14 +1819,16 @@ Expect<void> storeDef(const CanonCtx &Cx, const ComponentValVariant &V,
     const auto &VC = std::get<std::shared_ptr<ValComp>>(V);
     assuming(VC);
     const auto &O = std::get<OwnVal>(VC->V);
-    return Cx.Mem->storeValue<uint32_t>(O.Handle, Ptr);
+    return Cx.Mem->storeValue<uint32_t>(
+        lowerHandle(Cx, T.getOwn().Idx, O.Handle, true), Ptr);
   }
 
   if (T.isBorrowTy()) {
     const auto &VC = std::get<std::shared_ptr<ValComp>>(V);
     assuming(VC);
     const auto &B = std::get<BorrowVal>(VC->V);
-    return Cx.Mem->storeValue<uint32_t>(B.Handle, Ptr);
+    return Cx.Mem->storeValue<uint32_t>(
+        lowerHandle(Cx, T.getBorrow().Idx, B.Handle, false), Ptr);
   }
 
   spdlog::error(ErrCode::Value::ComponentNotImplInstantiate);
@@ -2108,13 +2164,17 @@ liftFlatDef(const CanonCtx &Cx, FlatIter &VI,
   if (T.isOwnTy()) {
     auto Next = VI.next();
     assuming(Next.has_value());
-    return makeComponentVal(OwnVal{Next->get<uint32_t>()});
+    EXPECTED_TRY(uint32_t Rep,
+                 liftOwnHandle(Cx, T.getOwn().Idx, Next->get<uint32_t>()));
+    return makeComponentVal(OwnVal{Rep});
   }
 
   if (T.isBorrowTy()) {
     auto Next = VI.next();
     assuming(Next.has_value());
-    return makeComponentVal(BorrowVal{Next->get<uint32_t>()});
+    EXPECTED_TRY(uint32_t Rep, liftBorrowHandle(Cx, T.getBorrow().Idx,
+                                                Next->get<uint32_t>()));
+    return makeComponentVal(BorrowVal{Rep});
   }
 
   if (T.isVariantTy() || T.isOptionTy() || T.isResultTy()) {
@@ -2411,14 +2471,16 @@ lowerFlatDef(const CanonCtx &Cx, const ComponentValVariant &V,
     const auto &VC = std::get<std::shared_ptr<ValComp>>(V);
     assuming(VC);
     const auto &O = std::get<OwnVal>(VC->V);
-    return std::vector<ValVariant>{ValVariant(O.Handle)};
+    return std::vector<ValVariant>{
+        ValVariant(lowerHandle(Cx, T.getOwn().Idx, O.Handle, true))};
   }
 
   if (T.isBorrowTy()) {
     const auto &VC = std::get<std::shared_ptr<ValComp>>(V);
     assuming(VC);
     const auto &B = std::get<BorrowVal>(VC->V);
-    return std::vector<ValVariant>{ValVariant(B.Handle)};
+    return std::vector<ValVariant>{
+        ValVariant(lowerHandle(Cx, T.getBorrow().Idx, B.Handle, false))};
   }
 
   if (T.isVariantTy() || T.isOptionTy() || T.isResultTy()) {
