@@ -196,7 +196,8 @@ TEST(ComponentNameParserTest, StronglyUniqueBasicCases) {
       return false;
     }
     return Validator::ComponentContext::addUniqueName(
-        Names, Validator::ComponentContext::makeNameRecord(*CN));
+               Names, Validator::ComponentContext::makeNameRecord(*CN)) ==
+           Validator::ComponentContext::NameClash::None;
   };
 
   EXPECT_TRUE(add("foo"sv));
@@ -221,7 +222,8 @@ TEST(ComponentNameParserTest, StronglyUnique) {
       return false;
     }
     return Validator::ComponentContext::addUniqueName(
-        Names, Validator::ComponentContext::makeNameRecord(*CN));
+               Names, Validator::ComponentContext::makeNameRecord(*CN)) ==
+           Validator::ComponentContext::NameClash::None;
   };
 
   EXPECT_TRUE(add("[method]foo.abc"sv));
@@ -245,7 +247,8 @@ TEST(ComponentNameParserTest, StronglyUniqueExportBasicCases) {
       return false;
     }
     return Validator::ComponentContext::addUniqueName(
-        Names, Validator::ComponentContext::makeNameRecord(*CN));
+               Names, Validator::ComponentContext::makeNameRecord(*CN)) ==
+           Validator::ComponentContext::NameClash::None;
   };
 
   EXPECT_TRUE(add("foo"sv));
@@ -270,7 +273,8 @@ TEST(ComponentNameParserTest, StronglyUniqueExport) {
       return false;
     }
     return Validator::ComponentContext::addUniqueName(
-        Names, Validator::ComponentContext::makeNameRecord(*CN));
+               Names, Validator::ComponentContext::makeNameRecord(*CN)) ==
+           Validator::ComponentContext::NameClash::None;
   };
 
   EXPECT_TRUE(add("[method]foo.abc"sv));
@@ -290,8 +294,9 @@ TEST(ComponentNameParserTest, StronglyUniqueImportExportIndependence) {
   auto add = [](std::vector<Validator::ComponentContext::NameRecord> &Names,
                 std::string_view S) {
     return Validator::ComponentContext::addUniqueName(
-        Names, Validator::ComponentContext::makeNameRecord(
-                   *Validator::ComponentName::parse(S)));
+               Names, Validator::ComponentContext::makeNameRecord(
+                          *Validator::ComponentName::parse(S))) ==
+           Validator::ComponentContext::NameClash::None;
   };
 
   EXPECT_TRUE(add(Imports, "foo"sv));
@@ -513,7 +518,8 @@ TEST(ComponentNameParserTest, StronglyUniqueWithNewKinds) {
       return false;
     }
     return Validator::ComponentContext::addUniqueName(
-        Names, Validator::ComponentContext::makeNameRecord(*CN));
+               Names, Validator::ComponentContext::makeNameRecord(*CN)) ==
+           Validator::ComponentContext::NameClash::None;
   };
 
   EXPECT_TRUE(add("foo"sv));

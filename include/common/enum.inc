@@ -1148,10 +1148,151 @@ E(ComponentTableLimitsMismatch, 0x02BE, "mismatch in table limits")
 // Core instance arg table element type does not match the import
 E(ComponentTableElemTypeMismatch, 0x02BF, "type mismatch in table element type")
 // Value linearity: each value must be consumed exactly once (GAP-EX-4)
-E(ComponentValueAlreadyConsumed, 0x02C0,
-  "value has already been consumed")
+E(ComponentValueAlreadyConsumed, 0x02C0, "value has already been consumed")
 E(ComponentValueNotConsumed, 0x02C1,
   "value was not consumed before end of component")
+// Component extern-name grammar diagnostics (import/export names)
+E(NameUnexpectedCharacter, 0x02C2, "unexpected character")
+E(NameUnexpectedEnd, 0x02C3, "unexpected end of input")
+E(NameEmptyString, 0x02C4, "empty string")
+E(NameEmptyIdentifierSegment, 0x02C5, "empty identifier segment")
+E(NameExpectedSlashAfterPackage, 0x02C6, "expected `/` after package name")
+E(NameTrailingCharacters, 0x02C7, "trailing characters found")
+E(NameExpectedOpenAngle, 0x02C8, "expected `<`")
+E(NameExpectedCloseAngle, 0x02C9, "expected `>`")
+E(NameExpectedOpenBrace, 0x02CA, "expected `{`")
+E(NameExpectedVersionRangeOp, 0x02CB,
+  "expected `>=` or `<` at start of version range")
+E(NameNotValidSemver, 0x02CC, "not a valid semver")
+E(NameIsNotValidSemver, 0x02CD, "is not a valid semver")
+E(NameExpectedIntegrity, 0x02CE, "expected `integrity=<`")
+E(NameFailedToFindCloseAngle, 0x02CF, "failed to find `>`")
+E(NameUrlContainsOpenAngle, 0x02D0, "url cannot contain `<`")
+E(NameIntegrityEmpty, 0x02D1, "integrity hash cannot be empty")
+E(NameExpectedDashAfterHash, 0x02D2, "expected `-` after hash algorithm")
+E(NameInvalidBase64, 0x02D3, "not valid base64")
+E(NameUnknownHashAlgorithm, 0x02D4, "unrecognized hash algorithm")
+E(NameFailedToFindDot, 0x02D5, "failed to find `.` character")
+// Component import/export name uniqueness diagnostics
+E(ComponentDuplicateImportName, 0x02D6, "duplicate import name")
+E(ComponentNameConflict, 0x02D7, "conflicts with previous name")
+E(ComponentExportNameConflict, 0x02D8,
+  "export name conflicts with previous name")
+E(ComponentDeclImportNameConflict, 0x02D9,
+  "conflicts with previous import name")
+E(ComponentDeclExportNameConflict, 0x02DA,
+  "conflicts with previous export name")
+// Component type-reference diagnostics
+E(ComponentUnknownFunctionType, 0x02DB, "unknown function type")
+E(ComponentUnknownInstanceType, 0x02DC, "unknown instance type")
+E(ComponentUnknownModuleType, 0x02DD, "unknown module type")
+E(ComponentNotFunctionType, 0x02DE, "not a function type")
+E(ComponentNotModuleType, 0x02DF, "not a module type")
+E(ComponentNotInstanceType, 0x02E0, "not an instance type")
+E(ComponentNotResourceType, 0x02E1, "not a resource type")
+E(ComponentNotLocalResource, 0x02E2, "not a local resource")
+E(ComponentExpectedDefinedType, 0x02E3, "expected defined type")
+E(ComponentExpectedResource, 0x02E4, "expected resource")
+E(ComponentExpectedComponent, 0x02E5, "expected component")
+E(ComponentFunctionIndexOutOfBounds, 0x02E6, "function index out of bounds")
+E(ComponentMemoryIndexOutOfBounds, 0x02E7, "memory index out of bounds")
+E(ComponentInstanceIndexOutOfBounds, 0x02E8, "instance index out of bounds")
+E(ComponentModuleIndexOutOfBounds, 0x02E9, "module index out of bounds")
+E(ComponentUnknownModule, 0x02EA, "unknown module")
+E(ComponentUnknownComponent, 0x02EB, "unknown component")
+// Canonical option diagnostics
+E(CanonEncodingConflict, 0x02EC, "canonical encoding option conflicts")
+E(CanonMemoryRequired, 0x02ED, "canonical option `memory` is required")
+E(CanonMemoryDuplicated, 0x02EE,
+  "canonical option `memory` is specified more than once")
+E(CanonReallocRequired, 0x02EF, "canonical option `realloc` is required")
+E(CanonReallocDuplicated, 0x02F0,
+  "canonical option `realloc` is specified more than once")
+E(CanonReallocSignature, 0x02F1,
+  "canonical option `realloc` uses a core function with an incorrect "
+  "signature")
+E(CanonPostReturnOnLower, 0x02F2,
+  "canonical option `post-return` cannot be specified for lowerings")
+E(CanonPostReturnDuplicated, 0x02F3,
+  "canonical option `post-return` is specified more than once")
+E(CanonPostReturnSignature, 0x02F4,
+  "canonical option `post-return` uses a core function with an incorrect "
+  "signature")
+E(CanonLoweredParamsMismatch, 0x02F5,
+  "lowered parameter types do not match parameter types")
+E(CanonLoweredResultsMismatch, 0x02F6,
+  "lowered result types do not match result types")
+// Alias diagnostics
+E(ComponentAliasUnknownExportName, 0x02F7, "alias unknown export name")
+E(ComponentAliasUnknownExportModule, 0x02F8, "alias unknown export module")
+E(ComponentInvalidOuterAliasCount, 0x02F9, "invalid outer alias count")
+E(ComponentAliasResourceLeak, 0x02FA,
+  "refers to resources not defined in the current component")
+// Instantiation-argument diagnostics
+E(ComponentMissingImport, 0x02FB, "missing import")
+E(ComponentMissingExpectedImport, 0x02FC, "missing expected import")
+E(ComponentMissingModuleArg, 0x02FD, "missing module instantiation argument")
+E(ComponentModuleArgUnknownExport, 0x02FE,
+  "module instantiation argument unknown export")
+E(ComponentDuplicateModuleArg, 0x02FF,
+  "duplicate module instantiation argument")
+E(ComponentDuplicateArg, 0x0290,
+  "instantiation argument conflicts with previous argument")
+E(ComponentMemoryLimitsMismatch, 0x0291, "mismatch in memory limits")
+E(ComponentMemorySharedMismatch, 0x0292,
+  "mismatch in the shared flag for memories")
+E(ComponentPrimitiveMismatch, 0x0293, "primitive mismatch")
+E(ComponentEnumMismatch, 0x0294, "mismatch in enum elements")
+E(ComponentResourceMismatch, 0x0295,
+  "type mismatch for import: resource types are not the same")
+E(ComponentExpectedFunc, 0x0296, "expected func")
+E(ComponentExpectedFuncParen, 0x0297, "expected: (func)")
+E(ComponentExpectedGlobal, 0x0298, "expected global")
+E(ComponentExpectedResult, 0x0299, "expected a result")
+E(ComponentExpectedNoOkType, 0x029A, "expected ok type to not be present")
+E(ComponentExpectedNoErrType, 0x029B, "expected err type to not be present")
+E(ComponentIsNotFunc, 0x029C, "is not a func")
+// Resource and annotated-name diagnostics
+E(ComponentResourceOutsideComponent, 0x029D,
+  "resources can only be defined within a concrete component")
+E(ComponentResourceRepI32, 0x029E, "resources can only be represented by `i32`")
+E(ComponentDtorSignature, 0x029F, "wrong signature for a destructor")
+E(AnnotatedMethodSelf, 0x0281, "should have a first argument called `self`")
+E(AnnotatedMethodBorrow, 0x0282,
+  "should take a first argument of `(borrow $T)`")
+E(AnnotatedMethodArgs, 0x0283, "should have at least one argument")
+E(AnnotatedCtorReturn, 0x0284,
+  "function should return `(own $T)` or `(result (own $T))`")
+E(AnnotatedCtorReturnOwn, 0x0285, "should return `(own $T)`")
+E(AnnotatedCtorReturnOne, 0x0286, "should return one value")
+E(AnnotatedFuncResourceName, 0x0287,
+  "import name is not valid: function does not match expected resource name")
+E(AnnotatedResourceName, 0x0288, "does not match expected resource name")
+E(AnnotatedStaticUnknown, 0x0289,
+  "static resource name is not known in this context")
+E(ComponentResourceNotNamed, 0x028A,
+  "resource used in function does not have a name in this context")
+E(ComponentImportNameInvalid, 0x028B, "import name is not valid")
+// Extern-position restrictions (resources must be introduced first)
+E(ComponentFuncNotValidExport, 0x028C, "func not valid to be used as export")
+E(ComponentFuncNotValidImport, 0x028D, "func not valid to be used as import")
+E(ComponentTypeNotValidExport, 0x028E, "type not valid to be used as export")
+E(ComponentTypeNotValidImport, 0x028F, "type not valid to be used as import")
+E(ComponentInstanceNotValidExport, 0x0280,
+  "instance not valid to be used as export")
+E(ComponentInstanceNotValidImport, 0x027F,
+  "instance not valid to be used as import")
+E(ComponentTypeSizeLimit, 0x027E, "effective type size exceeds the limit")
+// Empty composite type diagnostics
+E(RecordMustHaveField, 0x027A, "record type must have at least one field")
+E(EnumMustHaveVariant, 0x027B, "enum type must have at least one variant")
+E(FlagsMustHaveEntry, 0x027C, "flags must have at least one entry")
+E(TupleMustHaveType, 0x027D, "tuple type must have at least one type")
+E(FuncParamNameEmpty, 0x0278, "function parameter name cannot be empty")
+E(FuncResultContainsBorrow, 0x0277,
+  "function result cannot contain a `borrow` type")
+E(FuncParamNameConflict, 0x0279,
+  "function parameter name conflicts with previous parameter name")
 // @}
 
 // Instantiation phase

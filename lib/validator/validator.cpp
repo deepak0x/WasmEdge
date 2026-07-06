@@ -764,6 +764,10 @@ Expect<void> Validator::validate(const AST::CodeSection &CodeSec) {
   const auto &CodeVec = CodeSec.getContent();
   const auto &FuncVec = Checker.getFunctions();
 
+  if (SkipFuncBodies) {
+    return {};
+  }
+
   // Validate function body.
   for (uint32_t Id = 0; Id < static_cast<uint32_t>(CodeVec.size()); ++Id) {
     // Added functions contain imported functions.

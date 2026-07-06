@@ -100,7 +100,16 @@ bool Validator::matchNormalVal(const NormalVal &NSub, const NormalVal &NSup,
     return false;
   }
   if (NSub.DVT == nullptr && NSup.DVT == nullptr) {
-    return NSub.Prim == NSup.Prim;
+    if (NSub.Prim != NSup.Prim) {
+      // Only class-level differences (string vs scalar) name the primitive;
+      // scalar-vs-scalar mismatches keep the positional diagnostic.
+      if ((NSub.Prim == ComponentTypeCode::String) !=
+          (NSup.Prim == ComponentTypeCode::String)) {
+        MatchWhy = ErrCode::Value::ComponentPrimitiveMismatch;
+      }
+      return false;
+    }
+    return true;
   }
   if (NSub.DVT == nullptr || NSup.DVT == nullptr) {
     return false;
@@ -169,14 +178,27 @@ bool Validator::matchNormalVal(const NormalVal &NSub, const NormalVal &NSup,
     return A.getFlags().Labels == B.getFlags().Labels;
   }
   if (A.isEnumTy() && B.isEnumTy()) {
-    return A.getEnum().Labels == B.getEnum().Labels;
+    if (A.getEnum().Labels != B.getEnum().Labels) {
+      MatchWhy = ErrCode::Value::ComponentEnumMismatch;
+      return false;
+    }
+    return true;
   }
   if (A.isOptionTy() && B.isOptionTy()) {
     return MatchSub(A.getOption().ValTy, B.getOption().ValTy);
   }
   if (A.isResultTy() && B.isResultTy()) {
-    return MatchOpt(A.getResult().ValTy, B.getResult().ValTy) &&
-           MatchOpt(A.getResult().ErrTy, B.getResult().ErrTy);
+    const auto &RA = A.getResult();
+    const auto &RB = B.getResult();
+    if (RA.ValTy.has_value() && !RB.ValTy.has_value()) {
+      MatchWhy = ErrCode::Value::ComponentExpectedNoOkType;
+      return false;
+    }
+    if (RA.ErrTy.has_value() && !RB.ErrTy.has_value()) {
+      MatchWhy = ErrCode::Value::ComponentExpectedNoErrType;
+      return false;
+    }
+    return MatchOpt(RA.ValTy, RB.ValTy) && MatchOpt(RA.ErrTy, RB.ErrTy);
   }
   if ((A.isOwnTy() && B.isOwnTy()) || (A.isBorrowTy() && B.isBorrowTy())) {
     const uint32_t IA = A.isOwnTy() ? A.getOwn().Idx : A.getBorrow().Idx;
@@ -191,7 +213,11 @@ bool Validator::matchNormalVal(const NormalVal &NSub, const NormalVal &NSup,
     if (It != Subst.end()) {
       SupId = It->second;
     }
-    return *RA == SupId;
+    if (*RA != SupId) {
+      MatchWhy = ErrCode::Value::ComponentResourceMismatch;
+      return false;
+    }
+    return true;
   }
   return false;
 }
@@ -217,6 +243,7 @@ bool Validator::matchFunc(const CtxView::FuncInfo &Sub,
   const auto RA = Sub.FT->getResultList();
   const auto RB = Sup.FT->getResultList();
   if (RA.size() != RB.size()) {
+    MatchWhy = ErrCode::Value::ComponentExpectedResult;
     return false;
   }
   for (size_t I = 0; I < RA.size(); ++I) {
@@ -234,13 +261,24 @@ bool Validator::matchTypeEntry(const CtxView::TypeEntry &Sub,
   // Abstract resource supertype: binds (or re-checks) the substitution.
   if (Sup.ResourceId.has_value() && Sup.DT == nullptr) {
     if (!Sub.ResourceId.has_value()) {
+      MatchWhy = ErrCode::Value::ComponentExpectedResource;
       return false;
     }
     auto [It, New] = Subst.emplace(*Sup.ResourceId, *Sub.ResourceId);
-    return New || It->second == *Sub.ResourceId;
+    if (!New && It->second != *Sub.ResourceId) {
+      MatchWhy = ErrCode::Value::ComponentResourceMismatch;
+      return false;
+    }
+    // Abstract-to-abstract bindings work in both directions (component
+    // shapes are matched contravariantly on imports).
+    if (Sub.DT == nullptr) {
+      Subst.emplace(*Sub.ResourceId, *Sup.ResourceId);
+    }
+    return true;
   }
   if (Sup.ResourceId.has_value()) {
     if (!Sub.ResourceId.has_value()) {
+      MatchWhy = ErrCode::Value::ComponentExpectedResource;
       return false;
     }
     uint32_t SupId = *Sup.ResourceId;
@@ -251,6 +289,9 @@ bool Validator::matchTypeEntry(const CtxView::TypeEntry &Sub,
     return *Sub.ResourceId == SupId;
   }
   if (Sub.ResourceId.has_value()) {
+    if (Sup.DT != nullptr && Sup.DT->isDefValType()) {
+      MatchWhy = ErrCode::Value::ComponentExpectedDefinedType;
+    }
     return false;
   }
   if (Sup.Inst != nullptr) {
@@ -280,15 +321,33 @@ bool Validator::matchTypeEntry(const CtxView::TypeEntry &Sub,
   return false;
 }
 
+// Positional diagnostics ("type mismatch in instance export") beat leaf
+// reasons when the failure is nested inside an instance/component shape.
+void Validator::resetNestedMatchWhy() noexcept {
+  switch (MatchWhy) {
+  case ErrCode::Value::InstanceMissingExpectedExport:
+  case ErrCode::Value::ComponentMissingExpectedImport:
+  case ErrCode::Value::ComponentResourceMismatch:
+  case ErrCode::Value::ComponentExpectedResource:
+  case ErrCode::Value::ComponentExpectedDefinedType:
+    break;
+  default:
+    MatchWhy = ErrCode::Value::Success;
+    break;
+  }
+}
+
 bool Validator::matchInstanceInfo(const CtxView::InstanceInfo &Sub,
                                   const CtxView::InstanceInfo &Sup,
                                   ResourceSubst &Subst) noexcept {
   for (const auto &[Name, SupE] : Sup.Exports) {
     auto It = Sub.Exports.find(Name);
     if (It == Sub.Exports.end()) {
+      MatchWhy = ErrCode::Value::InstanceMissingExpectedExport;
       return false;
     }
     if (!matchExtern(It->second, SupE, Subst)) {
+      resetNestedMatchWhy();
       return false;
     }
   }
@@ -309,9 +368,11 @@ bool Validator::matchComponentInfo(const CtxView::ComponentInfo &Sub,
       }
     }
     if (SupImp == nullptr) {
+      MatchWhy = ErrCode::Value::ComponentMissingExpectedImport;
       return false;
     }
     if (!matchExtern(*SupImp, SubImp, Subst)) {
+      resetNestedMatchWhy();
       return false;
     }
   }
@@ -319,9 +380,11 @@ bool Validator::matchComponentInfo(const CtxView::ComponentInfo &Sub,
   for (const auto &[Name, SupE] : Sup.Exports) {
     auto It = Sub.Exports.find(Name);
     if (It == Sub.Exports.end()) {
+      MatchWhy = ErrCode::Value::InstanceMissingExpectedExport;
       return false;
     }
     if (!matchExtern(It->second, SupE, Subst)) {
+      resetNestedMatchWhy();
       return false;
     }
   }
@@ -332,6 +395,11 @@ bool Validator::matchExtern(const CtxView::ExternInfo &Sub,
                             const CtxView::ExternInfo &Sup,
                             ResourceSubst &Subst) noexcept {
   if (Sub.K != Sup.K) {
+    if (Sup.K == CtxView::ExternInfo::Kind::Func) {
+      MatchWhy = ErrCode::Value::ComponentExpectedFunc;
+    } else if (Sup.K == CtxView::ExternInfo::Kind::Component) {
+      MatchWhy = ErrCode::Value::ComponentExpectedComponent;
+    }
     return false;
   }
   using Kind = CtxView::ExternInfo::Kind;
@@ -349,21 +417,40 @@ bool Validator::matchExtern(const CtxView::ExternInfo &Sub,
           break;
         }
       }
-      if (SupExt == nullptr || !matchCoreExtern(*SupExt, SubExt)) {
+      if (SupExt == nullptr) {
+        MatchWhy = ErrCode::Value::ComponentMissingExpectedImport;
+        return false;
+      }
+      if (!matchCoreExtern(*SupExt, SubExt)) {
         return false;
       }
     }
     for (const auto &[Name, SupExt] : Sup.CoreMod->Exports) {
       auto It = Sub.CoreMod->Exports.find(Name);
-      if (It == Sub.CoreMod->Exports.end() ||
-          !matchCoreExtern(It->second, SupExt)) {
+      if (It == Sub.CoreMod->Exports.end()) {
+        MatchWhy = ErrCode::Value::InstanceMissingExpectedExport;
+        return false;
+      }
+      if (!matchCoreExtern(It->second, SupExt)) {
         return false;
       }
     }
     return true;
   }
-  case Kind::Func:
-    return matchFunc(Sub.Func, Sup.Func, Subst);
+  case Kind::Func: {
+    if (matchFunc(Sub.Func, Sup.Func, Subst)) {
+      return true;
+    }
+    // Value-leaf reasons stay internal to function signatures; the
+    // diagnostic names the parameter/result position instead.
+    if (MatchWhy == ErrCode::Value::ComponentPrimitiveMismatch ||
+        MatchWhy == ErrCode::Value::ComponentEnumMismatch ||
+        MatchWhy == ErrCode::Value::ComponentExpectedNoOkType ||
+        MatchWhy == ErrCode::Value::ComponentExpectedNoErrType) {
+      MatchWhy = ErrCode::Value::Success;
+    }
+    return false;
+  }
   case Kind::Value:
     return matchValType(Sub.Value, Sup.Value, Subst);
   case Kind::Type:
@@ -664,6 +751,9 @@ struct Freshener {
     CtxView::TypeEntry R = E;
     if (E.ResourceId.has_value()) {
       R.ResourceId = Node->apply(*E.ResourceId);
+      if (*R.ResourceId != *E.ResourceId) {
+        R.NameId = Ctx.getResource(*R.ResourceId).NameId;
+      }
     }
     R.Remap = Ctx.composeRemap(Node, E.Remap);
     if (E.Inst != nullptr) {
@@ -687,6 +777,7 @@ struct Freshener {
     auto *R = Ctx.newInstanceInfo();
     InstMemo.emplace(I, R);
     R->DeclScope = I->DeclScope;
+    R->Order = I->Order;
     for (const auto &[Name, E] : I->Exports) {
       R->Exports.emplace(Name, rebuild(E));
     }
@@ -717,6 +808,37 @@ struct Freshener {
 };
 } // namespace
 
+// Rebuilds an instance view minting fresh identities for the resources its
+// own declarations introduced (each import/export of an instance shape is a
+// distinct instantiation of its declared resources).
+const CtxView::InstanceInfo *
+Validator::freshenDeclaredResources(const CtxView::InstanceInfo *Inst,
+                                    bool FromImport) noexcept {
+  // Only declaration-built shapes carry their own declared resources;
+  // concrete instances' resources belong to the enclosing component.
+  if (Inst == nullptr || Inst->DeclScope == nullptr ||
+      Inst->DeclScope->K != CtxView::Scope::Kind::InstanceType) {
+    return Inst;
+  }
+  std::unordered_set<uint32_t> Ids;
+  CtxView::ExternInfo Probe;
+  Probe.K = CtxView::ExternInfo::Kind::Instance;
+  Probe.Inst = Inst;
+  collectResources(Probe, Ids);
+  auto *Node = CompCtx.newResourceMap();
+  for (const uint32_t Id : Ids) {
+    if (originatesIn(Id, *Inst->DeclScope)) {
+      Node->Map.emplace(
+          Id, CompCtx.addResource(nullptr, &CompCtx.top(), FromImport));
+    }
+  }
+  if (Node->Map.empty()) {
+    return Inst;
+  }
+  Freshener F{*this, CompCtx, Node, {}, {}};
+  return F.rebuildInstance(Inst);
+}
+
 Expect<const CtxView::InstanceInfo *> Validator::instantiateComponentInfo(
     const CtxView::ComponentInfo &CI,
     Span<const AST::Component::InstantiateArg<AST::Component::SortIndex>>
@@ -726,10 +848,10 @@ Expect<const CtxView::InstanceInfo *> Validator::instantiateComponentInfo(
   for (const auto &Arg : Args) {
     EXPECTED_TRY(auto Info, resolveSortIndex(Arg.getIndex()));
     if (!ArgMap.emplace(Arg.getName(), Info).second) {
-      spdlog::error(ErrCode::Value::ComponentDuplicateName);
+      spdlog::error(ErrCode::Value::ComponentDuplicateArg);
       spdlog::error("    Duplicate instantiation argument '{}'."sv,
                     Arg.getName());
-      return Unexpect(ErrCode::Value::ComponentDuplicateName);
+      return Unexpect(ErrCode::Value::ComponentDuplicateArg);
     }
     // Values are consumed by being passed as arguments.
     if (!Arg.getIndex().getSort().isCore() &&
@@ -748,32 +870,20 @@ Expect<const CtxView::InstanceInfo *> Validator::instantiateComponentInfo(
   for (const auto &[Name, Req] : CI.Imports) {
     auto It = ArgMap.find(Name);
     if (It == ArgMap.end()) {
-      spdlog::error(ErrCode::Value::MissingArgument);
+      spdlog::error(ErrCode::Value::ComponentMissingImport);
       spdlog::error("    Missing instantiation argument '{}'."sv, Name);
-      return Unexpect(ErrCode::Value::MissingArgument);
+      return Unexpect(ErrCode::Value::ComponentMissingImport);
     }
+    MatchWhy = ErrCode::Value::Success;
     if (!matchExtern(It->second, Req, Subst)) {
-      // A missing export on an instance argument gets its own diagnostic.
-      if (Req.K == CtxView::ExternInfo::Kind::Instance &&
-          It->second.K == CtxView::ExternInfo::Kind::Instance &&
-          Req.Inst != nullptr && It->second.Inst != nullptr) {
-        for (const auto &[ExpName, ReqE] : Req.Inst->Exports) {
-          if (It->second.Inst->Exports.find(ExpName) ==
-              It->second.Inst->Exports.end()) {
-            spdlog::error(ErrCode::Value::InstanceMissingExpectedExport);
-            spdlog::error(
-                "    Instance argument '{}' is missing expected export "
-                "'{}'."sv,
-                Name, ExpName);
-            return Unexpect(ErrCode::Value::InstanceMissingExpectedExport);
-          }
-        }
-      }
-      spdlog::error(ErrCode::Value::ArgTypeMismatch);
+      const auto Code = MatchWhy != ErrCode::Value::Success
+                            ? MatchWhy
+                            : ErrCode::Value::ArgTypeMismatch;
+      spdlog::error(Code);
       spdlog::error("    Instantiation argument '{}' has an incompatible "
                     "type."sv,
                     Name);
-      return Unexpect(ErrCode::Value::ArgTypeMismatch);
+      return Unexpect(Code);
     }
   }
 
@@ -801,9 +911,15 @@ Expect<const CtxView::InstanceInfo *> Validator::instantiateComponentInfo(
   Freshener F{*this, CompCtx, Node, {}, {}};
   auto *Result = CompCtx.newInstanceInfo();
   Result->DeclScope = CI.DeclScope;
+  Result->Synthetic = !CI.FromDecl;
   for (const auto &[Name, E] : CI.Exports) {
     Result->Exports.emplace(Name, F.rebuild(E));
+    Result->Order.emplace_back(Name);
   }
+  CtxView::ExternInfo Probe;
+  Probe.K = CtxView::ExternInfo::Kind::Instance;
+  Probe.Inst = Result;
+  EXPECTED_TRY(checkTypeSize(sizeOfExtern(Probe)));
   return Result;
 }
 
@@ -895,6 +1011,408 @@ Validator::resolveSortIndex(const AST::Component::SortIndex &SI) noexcept {
     spdlog::error(ErrCode::Value::DefTypeIndexOutOfBounds);
     return Unexpect(ErrCode::Value::DefTypeIndexOutOfBounds);
   }
+}
+
+// Collects composite defined types referenced by a value type. Own/borrow
+// handles are transparent (their resources are tracked separately).
+// NOLINTNEXTLINE(misc-no-recursion)
+void Validator::collectNamedTypes(
+    const CtxView::QualValType &Q, bool IncludeTop,
+    const CtxView::Scope *Binder,
+    std::unordered_set<const AST::Component::DefType *> &Out) noexcept {
+  if (Q.VT.isPrimValType() || Q.Home == nullptr) {
+    return;
+  }
+  CtxView::TypeEntry Storage;
+  const auto *Entry = resolveQualType(Q, Storage);
+  if (Entry == nullptr || Entry->DT == nullptr || !Entry->DT->isDefValType()) {
+    return;
+  }
+  const auto &D = Entry->DT->getDefValType();
+  if (D.isPrimValType() || D.isOwnTy() || D.isBorrowTy()) {
+    return;
+  }
+  // Types defined within the binder's own declarations are not free, but
+  // their references may still reach outside.
+  bool Internal = false;
+  for (const auto *H = Entry->Home; H != nullptr; H = H->Parent) {
+    if (H == Binder) {
+      Internal = true;
+      break;
+    }
+  }
+  if (IncludeTop && !Internal) {
+    if (!Out.insert(Entry->DT).second) {
+      return;
+    }
+  }
+  auto Sub = [&](const ComponentValType &VT) noexcept {
+    collectNamedTypes({VT, Entry->Home, Entry->Remap}, true, Binder, Out);
+  };
+  if (D.isRecordTy()) {
+    for (const auto &LT : D.getRecord().LabelTypes) {
+      Sub(LT.getValType());
+    }
+  } else if (D.isVariantTy()) {
+    for (const auto &[Label, Ty] : D.getVariant().Cases) {
+      if (Ty.has_value()) {
+        Sub(*Ty);
+      }
+    }
+  } else if (D.isListTy()) {
+    Sub(D.getList().ValTy);
+  } else if (D.isTupleTy()) {
+    for (const auto &Ty : D.getTuple().Types) {
+      Sub(Ty);
+    }
+  } else if (D.isOptionTy()) {
+    Sub(D.getOption().ValTy);
+  } else if (D.isResultTy()) {
+    if (D.getResult().ValTy.has_value()) {
+      Sub(*D.getResult().ValTy);
+    }
+    if (D.getResult().ErrTy.has_value()) {
+      Sub(*D.getResult().ErrTy);
+    }
+  }
+}
+
+// NOLINTNEXTLINE(misc-no-recursion)
+void Validator::collectNamedTypes(
+    const CtxView::ExternInfo &Info, bool IncludeTop,
+    const CtxView::Scope *Binder,
+    std::unordered_set<const AST::Component::DefType *> &Out) noexcept {
+  using Kind = CtxView::ExternInfo::Kind;
+  switch (Info.K) {
+  case Kind::CoreModule:
+    return;
+  case Kind::Func:
+    // Parameter and result types themselves sit in a naming position; only
+    // the types nested within them require prior introduction.
+    if (Info.Func.FT != nullptr) {
+      for (const auto &P : Info.Func.FT->getParamList()) {
+        collectNamedTypes({P.getValType(), Info.Func.Home, Info.Func.Remap},
+                          false, Binder, Out);
+      }
+      for (const auto &R : Info.Func.FT->getResultList()) {
+        collectNamedTypes({R.getValType(), Info.Func.Home, Info.Func.Remap},
+                          false, Binder, Out);
+      }
+    }
+    return;
+  case Kind::Value:
+    collectNamedTypes(Info.Value, false, Binder, Out);
+    return;
+  case Kind::Type: {
+    const auto &E = Info.Type;
+    if (E.ResourceId.has_value()) {
+      return;
+    }
+    if (E.Inst != nullptr || E.Comp != nullptr) {
+      CtxView::ExternInfo Probe;
+      Probe.K = E.Inst != nullptr ? Kind::Instance : Kind::Component;
+      Probe.Inst = E.Inst;
+      Probe.Comp = E.Comp;
+      const auto *SubBinder =
+          E.Inst != nullptr ? E.Inst->DeclScope : E.Comp->DeclScope;
+      collectNamedTypes(Probe, IncludeTop,
+                        SubBinder != nullptr ? SubBinder : Binder, Out);
+      return;
+    }
+    if (E.DT != nullptr && E.DT->isDefValType()) {
+      const auto N = normalizeEntry(E);
+      if (N.DVT == nullptr) {
+        return;
+      }
+      if (IncludeTop && !Out.insert(E.DT).second) {
+        return;
+      }
+      const auto &D = *N.DVT;
+      auto Sub = [&](const ComponentValType &VT) noexcept {
+        collectNamedTypes({VT, N.Home, N.Remap}, true, Binder, Out);
+      };
+      if (D.isRecordTy()) {
+        for (const auto &LT : D.getRecord().LabelTypes) {
+          Sub(LT.getValType());
+        }
+      } else if (D.isVariantTy()) {
+        for (const auto &[Label, Ty] : D.getVariant().Cases) {
+          if (Ty.has_value()) {
+            Sub(*Ty);
+          }
+        }
+      } else if (D.isListTy()) {
+        Sub(D.getList().ValTy);
+      } else if (D.isTupleTy()) {
+        for (const auto &Ty : D.getTuple().Types) {
+          Sub(Ty);
+        }
+      } else if (D.isOptionTy()) {
+        Sub(D.getOption().ValTy);
+      } else if (D.isResultTy()) {
+        if (D.getResult().ValTy.has_value()) {
+          Sub(*D.getResult().ValTy);
+        }
+        if (D.getResult().ErrTy.has_value()) {
+          Sub(*D.getResult().ErrTy);
+        }
+      }
+      return;
+    }
+    if (E.DT != nullptr && E.DT->isFuncType()) {
+      CtxView::ExternInfo FI;
+      FI.K = Kind::Func;
+      FI.Func = {&E.DT->getFuncType(), E.Home, E.Remap};
+      collectNamedTypes(FI, true, Binder, Out);
+    }
+    return;
+  }
+  case Kind::Instance:
+    if (Info.Inst != nullptr) {
+      for (const auto &[Name, Sub] : Info.Inst->Exports) {
+        collectNamedTypes(Sub, true,
+                          Info.Inst->DeclScope != nullptr ? Info.Inst->DeclScope
+                                                          : Binder,
+                          Out);
+      }
+    }
+    return;
+  case Kind::Component:
+    if (Info.Comp != nullptr) {
+      const auto *SubBinder =
+          Info.Comp->DeclScope != nullptr ? Info.Comp->DeclScope : Binder;
+      for (const auto &[Name, Sub] : Info.Comp->Imports) {
+        collectNamedTypes(Sub, true, SubBinder, Out);
+      }
+      for (const auto &[Name, Sub] : Info.Comp->Exports) {
+        collectNamedTypes(Sub, true, SubBinder, Out);
+      }
+    }
+    return;
+  }
+}
+
+// Effective size of a value type (spec-limit metric; memoized per node).
+uint64_t Validator::sizeOfValType(const CtxView::QualValType &Q) noexcept {
+  const auto N = normalizeValType(Q);
+  if (!N.Valid || N.DVT == nullptr) {
+    return 1;
+  }
+  auto It = TypeSizeMemo.find(N.DVT);
+  if (It != TypeSizeMemo.end()) {
+    return It->second;
+  }
+  TypeSizeMemo.emplace(N.DVT, 1); // Break cycles defensively.
+  const auto &D = *N.DVT;
+  uint64_t Size = 1;
+  auto Add = [&](const ComponentValType &VT) noexcept {
+    Size += sizeOfValType({VT, N.Home, N.Remap});
+  };
+  if (D.isRecordTy()) {
+    for (const auto &LT : D.getRecord().LabelTypes) {
+      Add(LT.getValType());
+    }
+  } else if (D.isVariantTy()) {
+    for (const auto &[Label, Ty] : D.getVariant().Cases) {
+      if (Ty.has_value()) {
+        Add(*Ty);
+      } else {
+        Size += 1;
+      }
+    }
+  } else if (D.isListTy()) {
+    Add(D.getList().ValTy);
+  } else if (D.isTupleTy()) {
+    for (const auto &Ty : D.getTuple().Types) {
+      Add(Ty);
+    }
+  } else if (D.isOptionTy()) {
+    Add(D.getOption().ValTy);
+  } else if (D.isResultTy()) {
+    if (D.getResult().ValTy.has_value()) {
+      Add(*D.getResult().ValTy);
+    }
+    if (D.getResult().ErrTy.has_value()) {
+      Add(*D.getResult().ErrTy);
+    }
+  } else if (D.isFlagsTy()) {
+    Size += D.getFlags().Labels.size();
+  } else if (D.isEnumTy()) {
+    Size += D.getEnum().Labels.size();
+  }
+  TypeSizeMemo[N.DVT] = Size;
+  return Size;
+}
+
+uint64_t Validator::sizeOfExtern(const CtxView::ExternInfo &Info) noexcept {
+  using Kind = CtxView::ExternInfo::Kind;
+  switch (Info.K) {
+  case Kind::CoreModule:
+    return Info.CoreMod != nullptr
+               ? 1 + Info.CoreMod->Imports.size() + Info.CoreMod->Exports.size()
+               : 1;
+  case Kind::Func: {
+    if (Info.Func.FT == nullptr) {
+      return 1;
+    }
+    auto It = TypeSizeMemo.find(Info.Func.FT);
+    if (It != TypeSizeMemo.end()) {
+      return It->second;
+    }
+    uint64_t Size = 1;
+    for (const auto &P : Info.Func.FT->getParamList()) {
+      Size += sizeOfValType({P.getValType(), Info.Func.Home, Info.Func.Remap});
+    }
+    for (const auto &R : Info.Func.FT->getResultList()) {
+      Size += sizeOfValType({R.getValType(), Info.Func.Home, Info.Func.Remap});
+    }
+    TypeSizeMemo.emplace(Info.Func.FT, Size);
+    return Size;
+  }
+  case Kind::Value:
+    return 1 + sizeOfValType(Info.Value);
+  case Kind::Type: {
+    const auto &E = Info.Type;
+    if (E.ResourceId.has_value()) {
+      return 1;
+    }
+    if (E.Inst != nullptr || E.Comp != nullptr) {
+      const void *Key = E.Inst != nullptr ? static_cast<const void *>(E.Inst)
+                                          : static_cast<const void *>(E.Comp);
+      auto It = TypeSizeMemo.find(Key);
+      if (It != TypeSizeMemo.end()) {
+        return It->second;
+      }
+      TypeSizeMemo.emplace(Key, 1);
+      uint64_t Size = 1;
+      if (E.Inst != nullptr) {
+        for (const auto &[Name, Sub] : E.Inst->Exports) {
+          Size += 1 + sizeOfExtern(Sub);
+        }
+      } else {
+        for (const auto &[Name, Sub] : E.Comp->Imports) {
+          Size += 1 + sizeOfExtern(Sub);
+        }
+        for (const auto &[Name, Sub] : E.Comp->Exports) {
+          Size += 1 + sizeOfExtern(Sub);
+        }
+      }
+      TypeSizeMemo[Key] = Size;
+      return Size;
+    }
+    if (E.DT != nullptr && E.DT->isDefValType()) {
+      // Wrap in the entry's own frame.
+      CtxView::QualValType Q{ComponentValType(ComponentTypeCode::Bool), nullptr,
+                             nullptr};
+      (void)Q;
+      const auto N = normalizeEntry(E);
+      if (N.DVT == nullptr) {
+        return 1;
+      }
+      CtxView::ExternInfo Probe;
+      (void)Probe;
+      // Reuse the valtype metric through the composite node directly.
+      auto It = TypeSizeMemo.find(N.DVT);
+      if (It != TypeSizeMemo.end()) {
+        return It->second;
+      }
+      // Build a qual type that resolves to this composite via its home.
+      // Walk the composite in place.
+      uint64_t Size = 1;
+      const auto &D = *N.DVT;
+      auto Add = [&](const ComponentValType &VT) noexcept {
+        Size += sizeOfValType({VT, N.Home, N.Remap});
+      };
+      if (D.isRecordTy()) {
+        for (const auto &LT : D.getRecord().LabelTypes) {
+          Add(LT.getValType());
+        }
+      } else if (D.isVariantTy()) {
+        for (const auto &[Label, Ty] : D.getVariant().Cases) {
+          if (Ty.has_value()) {
+            Add(*Ty);
+          } else {
+            Size += 1;
+          }
+        }
+      } else if (D.isListTy()) {
+        Add(D.getList().ValTy);
+      } else if (D.isTupleTy()) {
+        for (const auto &Ty : D.getTuple().Types) {
+          Add(Ty);
+        }
+      } else if (D.isOptionTy()) {
+        Add(D.getOption().ValTy);
+      } else if (D.isResultTy()) {
+        if (D.getResult().ValTy.has_value()) {
+          Add(*D.getResult().ValTy);
+        }
+        if (D.getResult().ErrTy.has_value()) {
+          Add(*D.getResult().ErrTy);
+        }
+      } else if (D.isFlagsTy()) {
+        Size += D.getFlags().Labels.size();
+      } else if (D.isEnumTy()) {
+        Size += D.getEnum().Labels.size();
+      }
+      TypeSizeMemo[N.DVT] = Size;
+      return Size;
+    }
+    if (E.DT != nullptr && E.DT->isFuncType()) {
+      CtxView::ExternInfo FI;
+      FI.K = Kind::Func;
+      FI.Func = {&E.DT->getFuncType(), E.Home, E.Remap};
+      return sizeOfExtern(FI);
+    }
+    return 1;
+  }
+  case Kind::Instance: {
+    if (Info.Inst == nullptr) {
+      return 1;
+    }
+    auto It = TypeSizeMemo.find(Info.Inst);
+    if (It != TypeSizeMemo.end()) {
+      return It->second;
+    }
+    TypeSizeMemo.emplace(Info.Inst, 1);
+    uint64_t Size = 1;
+    for (const auto &[Name, Sub] : Info.Inst->Exports) {
+      Size += 1 + sizeOfExtern(Sub);
+    }
+    TypeSizeMemo[Info.Inst] = Size;
+    return Size;
+  }
+  case Kind::Component: {
+    if (Info.Comp == nullptr) {
+      return 1;
+    }
+    auto It = TypeSizeMemo.find(Info.Comp);
+    if (It != TypeSizeMemo.end()) {
+      return It->second;
+    }
+    TypeSizeMemo.emplace(Info.Comp, 1);
+    uint64_t Size = 1;
+    for (const auto &[Name, Sub] : Info.Comp->Imports) {
+      Size += 1 + sizeOfExtern(Sub);
+    }
+    for (const auto &[Name, Sub] : Info.Comp->Exports) {
+      Size += 1 + sizeOfExtern(Sub);
+    }
+    TypeSizeMemo[Info.Comp] = Size;
+    return Size;
+  }
+  }
+  return 1;
+}
+
+Expect<void> Validator::checkTypeSize(uint64_t Size) noexcept {
+  if (Size >= MaxTypeSize) {
+    spdlog::error(ErrCode::Value::ComponentTypeSizeLimit);
+    spdlog::error("    Effective type size {} exceeds the limit of {}."sv, Size,
+                  MaxTypeSize);
+    return Unexpect(ErrCode::Value::ComponentTypeSizeLimit);
+  }
+  return {};
 }
 
 // NOLINTEND(misc-no-recursion)

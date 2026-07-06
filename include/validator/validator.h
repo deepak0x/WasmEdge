@@ -174,15 +174,47 @@ private:
 
   // Annotated plainname rules ([constructor]/[method]/[static]).
   Expect<void> checkAnnotatedName(const ComponentName &Name,
-                                  const CtxView::ExternInfo &Info) noexcept;
+                                  const CtxView::ExternInfo &Info,
+                                  bool IsImport) noexcept;
   // Track plain resource labels for later annotated-name checks.
   void recordResourceLabel(const ComponentName &Name,
-                           const CtxView::ExternInfo &Info) noexcept;
+                           const CtxView::ExternInfo &Info,
+                           bool IsImport) noexcept;
+  // Named-types rule: flags/enums/records/variants/resources referenced by
+  // an extern must have been introduced by a preceding import/export.
+  Expect<void> checkResourceNameability(const CtxView::ExternInfo &Info,
+                                        bool IsImport) noexcept;
+  bool namedExtern(const CtxView::ExternInfo &Info, bool IsImport) noexcept;
+  bool namedValType(const CtxView::QualValType &Q, bool IsImport) noexcept;
+  bool namedTypeEntry(const CtxView::TypeEntry &E, bool IsImport) noexcept;
+  bool allValTypesNamed(const CtxView::TypeEntry &E, bool IsImport) noexcept;
+  const CtxView::InstanceInfo *
+  freshenDeclaredResources(const CtxView::InstanceInfo *Inst,
+                           bool FromImport) noexcept;
+  // Composite defined types referenced by an extern's type.
+  void collectNamedTypes(
+      const CtxView::QualValType &Q, bool IncludeTop,
+      const CtxView::Scope *Binder,
+      std::unordered_set<const AST::Component::DefType *> &Out) noexcept;
+  void collectNamedTypes(
+      const CtxView::ExternInfo &Info, bool IncludeTop,
+      const CtxView::Scope *Binder,
+      std::unordered_set<const AST::Component::DefType *> &Out) noexcept;
+  // Effective type-size limit (prevents exponential type blowup).
+  static inline constexpr const uint64_t MaxTypeSize = 1000000;
+  std::unordered_map<const void *, uint64_t> TypeSizeMemo;
+  uint64_t sizeOfValType(const CtxView::QualValType &Q) noexcept;
+  uint64_t sizeOfExtern(const CtxView::ExternInfo &Info) noexcept;
+  Expect<void> checkTypeSize(uint64_t Size) noexcept;
 
   /// \name Structural matching (MVP: equality modulo resource identity).
   /// Substitution maps supertype-side abstract resource ids to subtype ids.
   /// @{
   using ResourceSubst = std::unordered_map<uint32_t, uint32_t>;
+  // Most-specific reason recorded by the innermost failing matcher; sites
+  // report it when set, falling back to their generic mismatch code.
+  ErrCode::Value MatchWhy = ErrCode::Value::Success;
+  void resetNestedMatchWhy() noexcept;
   bool matchValType(const CtxView::QualValType &Sub,
                     const CtxView::QualValType &Sup,
                     ResourceSubst &Subst) noexcept;
@@ -267,6 +299,9 @@ private:
   const Configure Conf;
   /// Formal checker
   FormChecker Checker;
+  /// Skip function-body checking (component validation defers bodies to the
+  /// end, matching the reference validator's streaming order).
+  bool SkipFuncBodies = false;
   /// Context for Component validation
   ComponentContext CompCtx;
 };

@@ -97,9 +97,9 @@ Validator::validate(const AST::Component::DefValType &DVT) noexcept {
   if (DVT.isRecordTy()) {
     const auto &Rec = DVT.getRecord();
     if (Rec.LabelTypes.empty()) {
-      spdlog::error(ErrCode::Value::VariantMustHaveCase);
+      spdlog::error(ErrCode::Value::RecordMustHaveField);
       spdlog::error("    Record type must have at least one field."sv);
-      return Unexpect(ErrCode::Value::VariantMustHaveCase);
+      return Unexpect(ErrCode::Value::RecordMustHaveField);
     }
     for (const auto &LT : Rec.LabelTypes) {
       EXPECTED_TRY(checkLabel(LT.getLabel(), Seen, "Record field"sv,
@@ -136,9 +136,9 @@ Validator::validate(const AST::Component::DefValType &DVT) noexcept {
   if (DVT.isTupleTy()) {
     const auto &Tup = DVT.getTuple();
     if (Tup.Types.empty()) {
-      spdlog::error(ErrCode::Value::VariantMustHaveCase);
+      spdlog::error(ErrCode::Value::TupleMustHaveType);
       spdlog::error("    Tuple type must have at least one element."sv);
-      return Unexpect(ErrCode::Value::VariantMustHaveCase);
+      return Unexpect(ErrCode::Value::TupleMustHaveType);
     }
     for (const auto &Ty : Tup.Types) {
       EXPECTED_TRY(validate(Ty));
@@ -148,9 +148,9 @@ Validator::validate(const AST::Component::DefValType &DVT) noexcept {
   if (DVT.isFlagsTy()) {
     const auto &Flags = DVT.getFlags();
     if (Flags.Labels.empty()) {
-      spdlog::error(ErrCode::Value::VariantMustHaveCase);
+      spdlog::error(ErrCode::Value::FlagsMustHaveEntry);
       spdlog::error("    Flags type must have at least one label."sv);
-      return Unexpect(ErrCode::Value::VariantMustHaveCase);
+      return Unexpect(ErrCode::Value::FlagsMustHaveEntry);
     }
     if (Flags.Labels.size() > 32) {
       spdlog::error(ErrCode::Value::CannotHaveMoreThan32Flags);
@@ -166,9 +166,9 @@ Validator::validate(const AST::Component::DefValType &DVT) noexcept {
   if (DVT.isEnumTy()) {
     const auto &Enum = DVT.getEnum();
     if (Enum.Labels.empty()) {
-      spdlog::error(ErrCode::Value::VariantMustHaveCase);
+      spdlog::error(ErrCode::Value::EnumMustHaveVariant);
       spdlog::error("    Enum type must have at least one label."sv);
-      return Unexpect(ErrCode::Value::VariantMustHaveCase);
+      return Unexpect(ErrCode::Value::EnumMustHaveVariant);
     }
     for (const auto &Label : Enum.Labels) {
       EXPECTED_TRY(checkLabel(Label, Seen, "Enum"sv,
@@ -193,17 +193,17 @@ Validator::validate(const AST::Component::DefValType &DVT) noexcept {
     const uint32_t Idx = DVT.isOwnTy() ? DVT.getOwn().Idx : DVT.getBorrow().Idx;
     const auto *Entry = CompCtx.top().getType(Idx);
     if (Entry == nullptr) {
-      spdlog::error(ErrCode::Value::DefTypeIndexOutOfBounds);
+      spdlog::error(ErrCode::Value::CoreTypeIndexOutOfBounds);
       spdlog::error("    own/borrow type index {} out of bounds (size {})."sv,
                     Idx, CompCtx.top().Types.size());
-      return Unexpect(ErrCode::Value::DefTypeIndexOutOfBounds);
+      return Unexpect(ErrCode::Value::CoreTypeIndexOutOfBounds);
     }
     if (!Entry->ResourceId.has_value()) {
-      spdlog::error(ErrCode::Value::NotADefinedType);
+      spdlog::error(ErrCode::Value::ComponentNotResourceType);
       spdlog::error(
           "    own/borrow type index {} does not refer to a resource type."sv,
           Idx);
-      return Unexpect(ErrCode::Value::NotADefinedType);
+      return Unexpect(ErrCode::Value::ComponentNotResourceType);
     }
     return {};
   }
@@ -221,8 +221,13 @@ Expect<void> Validator::validate(const AST::Component::FuncType &FT) noexcept {
   }
   std::unordered_set<std::string> Seen;
   for (const auto &Param : FT.getParamList()) {
+    if (Param.getLabel().empty()) {
+      spdlog::error(ErrCode::Value::FuncParamNameEmpty);
+      spdlog::error("    Function parameter name cannot be empty."sv);
+      return Unexpect(ErrCode::Value::FuncParamNameEmpty);
+    }
     EXPECTED_TRY(checkLabel(Param.getLabel(), Seen, "Function parameter"sv,
-                            ErrCode::Value::ComponentDuplicateName));
+                            ErrCode::Value::FuncParamNameConflict));
     EXPECTED_TRY(validate(Param.getValType()));
   }
   if (FT.getResultList().size() > 1) {
@@ -238,9 +243,9 @@ Expect<void> Validator::validate(const AST::Component::FuncType &FT) noexcept {
     }
     EXPECTED_TRY(validate(Result.getValType()));
     if (containsBorrow({Result.getValType(), &CompCtx.top(), nullptr})) {
-      spdlog::error(ErrCode::Value::InvalidTypeReference);
+      spdlog::error(ErrCode::Value::FuncResultContainsBorrow);
       spdlog::error("    Function results cannot contain borrow handles."sv);
-      return Unexpect(ErrCode::Value::InvalidTypeReference);
+      return Unexpect(ErrCode::Value::FuncResultContainsBorrow);
     }
   }
   return {};
@@ -249,24 +254,29 @@ Expect<void> Validator::validate(const AST::Component::FuncType &FT) noexcept {
 Expect<void>
 Validator::validate(const AST::Component::ResourceType &RT) noexcept {
   if (CompCtx.top().K != ComponentContext::Scope::Kind::Component) {
-    spdlog::error(ErrCode::Value::InvalidTypeReference);
+    spdlog::error(ErrCode::Value::ComponentResourceOutsideComponent);
     spdlog::error(
         "    Resource types cannot be defined in component or instance types."sv);
-    return Unexpect(ErrCode::Value::InvalidTypeReference);
+    return Unexpect(ErrCode::Value::ComponentResourceOutsideComponent);
   }
   if (RT.getCallback().has_value()) {
     spdlog::error(ErrCode::Value::ComponentNotImplValidator);
     spdlog::error("    async resource destructors are not supported yet."sv);
     return Unexpect(ErrCode::Value::ComponentNotImplValidator);
   }
+  if (RT.isAddrI64()) {
+    spdlog::error(ErrCode::Value::ComponentResourceRepI32);
+    spdlog::error("    Resources can only be represented by i32."sv);
+    return Unexpect(ErrCode::Value::ComponentResourceRepI32);
+  }
   if (RT.getDestructor().has_value()) {
     const uint32_t Idx = *RT.getDestructor();
     const auto *Dtor = CompCtx.top().getCoreFunc(Idx);
     if (Dtor == nullptr) {
-      spdlog::error(ErrCode::Value::InvalidIndex);
+      spdlog::error(ErrCode::Value::ComponentFunctionIndexOutOfBounds);
       spdlog::error("    Destructor core function index {} out of bounds."sv,
                     Idx);
-      return Unexpect(ErrCode::Value::InvalidIndex);
+      return Unexpect(ErrCode::Value::ComponentFunctionIndexOutOfBounds);
     }
     // The destructor must have type [rep] -> [].
     const ValType Rep =
@@ -275,10 +285,10 @@ Validator::validate(const AST::Component::ResourceType &RT) noexcept {
     if (!CT.isFunc() || CT.getFuncType().getParamTypes().size() != 1 ||
         CT.getFuncType().getParamTypes()[0] != Rep ||
         !CT.getFuncType().getReturnTypes().empty()) {
-      spdlog::error(ErrCode::Value::InvalidTypeReference);
+      spdlog::error(ErrCode::Value::ComponentDtorSignature);
       spdlog::error("    Resource destructor must have type [{}] -> []."sv,
                     RT.isAddrI64() ? "i64"sv : "i32"sv);
-      return Unexpect(ErrCode::Value::InvalidTypeReference);
+      return Unexpect(ErrCode::Value::ComponentDtorSignature);
     }
   }
   return {};
@@ -293,9 +303,43 @@ Validator::validate(const AST::Component::CoreDefType &DType) noexcept {
     // demand by the core validator.
     std::vector<uint32_t> SubTypeDepthMap;
     for (const auto &ST : DType.getSubTypes()) {
-      EXPECTED_TRY(validate(ST,
-                            static_cast<uint32_t>(Checker.getTypes().size()),
-                            SubTypeDepthMap));
+      // Concrete heap-type references resolve against the component's
+      // core:type space, which the core FormChecker cannot see. Check them
+      // here and only run the structural core validation when unreferenced.
+      bool HasTypeRefs = false;
+      auto CheckRefs =
+          [this, &HasTypeRefs](Span<const ValType> Types) -> Expect<void> {
+        for (const auto &VT : Types) {
+          if (VT.isRefType() && !VT.isAbsHeapType()) {
+            HasTypeRefs = true;
+            const auto *Entry = CompCtx.top().getCoreType(VT.getTypeIndex());
+            if (Entry == nullptr) {
+              spdlog::error(ErrCode::Value::CoreTypeIndexOutOfBounds);
+              spdlog::error("    Core type index {} out of bounds."sv,
+                            VT.getTypeIndex());
+              return Unexpect(ErrCode::Value::CoreTypeIndexOutOfBounds);
+            }
+            if (Entry->Mod != nullptr) {
+              spdlog::error(ErrCode::Value::ComponentUnknownModuleType);
+              spdlog::error("    Core type index {} refers to a module type."sv,
+                            VT.getTypeIndex());
+              return Unexpect(ErrCode::Value::ComponentUnknownModuleType);
+            }
+          }
+        }
+        return {};
+      };
+      if (ST.getCompositeType().isFunc()) {
+        EXPECTED_TRY(
+            CheckRefs(ST.getCompositeType().getFuncType().getParamTypes()));
+        EXPECTED_TRY(
+            CheckRefs(ST.getCompositeType().getFuncType().getReturnTypes()));
+      }
+      if (!HasTypeRefs) {
+        EXPECTED_TRY(validate(ST,
+                              static_cast<uint32_t>(Checker.getTypes().size()),
+                              SubTypeDepthMap));
+      }
       CompCtx.top().CoreTypes.push_back({&ST, nullptr});
     }
     return {};
@@ -310,27 +354,36 @@ Validator::validate(const AST::Component::DefType &DType) noexcept {
   if (DType.isDefValType()) {
     EXPECTED_TRY(validate(DType.getDefValType()));
     auto &S = CompCtx.top();
-    S.Types.push_back({&DType, &S, nullptr, nullptr, nullptr, {}});
+    S.Types.push_back({&DType, &S, nullptr, nullptr, nullptr, {}, {}});
   } else if (DType.isFuncType()) {
     EXPECTED_TRY(validate(DType.getFuncType()));
     auto &S = CompCtx.top();
-    S.Types.push_back({&DType, &S, nullptr, nullptr, nullptr, {}});
+    S.Types.push_back({&DType, &S, nullptr, nullptr, nullptr, {}, {}});
   } else if (DType.isResourceType()) {
     EXPECTED_TRY(validate(DType.getResourceType()));
     auto &S = CompCtx.top();
     const uint32_t Id =
         CompCtx.addResource(&DType.getResourceType(), &S, false);
-    S.Types.push_back({&DType, &S, nullptr, nullptr, nullptr, Id});
+    S.Types.push_back({&DType, &S, nullptr, nullptr, nullptr, Id,
+                       CompCtx.getResource(Id).NameId});
   } else if (DType.isInstanceType()) {
     EXPECTED_TRY(const auto *Info,
                  validateInstanceType(DType.getInstanceType()));
     auto &S = CompCtx.top();
-    S.Types.push_back({&DType, &S, nullptr, Info, nullptr, {}});
+    S.Types.push_back({&DType, &S, nullptr, Info, nullptr, {}, {}});
   } else if (DType.isComponentType()) {
     EXPECTED_TRY(const auto *Info,
                  validateComponentType(DType.getComponentType()));
     auto &S = CompCtx.top();
-    S.Types.push_back({&DType, &S, nullptr, nullptr, Info, {}});
+    S.Types.push_back({&DType, &S, nullptr, nullptr, Info, {}, {}});
+  }
+  // Effective type-size limit on the freshly defined entry.
+  {
+    auto &S = CompCtx.top();
+    CtxView::ExternInfo Probe;
+    Probe.K = CtxView::ExternInfo::Kind::Type;
+    Probe.Type = S.Types.back();
+    EXPECTED_TRY(checkTypeSize(sizeOfExtern(Probe)));
   }
   return {};
 }
@@ -402,6 +455,14 @@ Expect<const ComponentContext::CoreModuleInfo *> Validator::validateModuleType(
     if (Decl.isImport()) {
       const auto &Imp = Decl.getImport();
       EXPECTED_TRY(auto Ext, validate(Imp.getImportDesc()));
+      for (const auto &[ModName, Name, Prev] : Info->Imports) {
+        if (ModName == Imp.getModuleName() && Name == Imp.getName()) {
+          spdlog::error(ErrCode::Value::ComponentDuplicateImportName);
+          spdlog::error("    Module type import '{}'.'{}' name conflict."sv,
+                        ModName, Name);
+          return Unexpect(ErrCode::Value::ComponentDuplicateImportName);
+        }
+      }
       Info->Imports.emplace_back(std::string(Imp.getModuleName()),
                                  std::string(Imp.getName()), Ext);
     } else if (Decl.isType()) {
@@ -474,7 +535,11 @@ Expect<const ComponentContext::InstanceInfo *> Validator::validateInstanceType(
   auto *Info = CompCtx.newInstanceInfo();
   Info->DeclScope = &Guard.get();
   for (const auto &Decl : IT.getDecl()) {
+    const auto Before = Info->Exports.size();
     EXPECTED_TRY(validate(Decl, Info->Exports));
+    if (Info->Exports.size() != Before && Decl.isExportDecl()) {
+      Info->Order.emplace_back(Decl.getExport().getName());
+    }
   }
   return Info;
 }
@@ -486,6 +551,7 @@ Validator::validateComponentType(
       CompCtx, ComponentContext::Scope::Kind::ComponentType);
   auto *Info = CompCtx.newComponentInfo();
   Info->DeclScope = &Guard.get();
+  Info->FromDecl = true;
   for (const auto &Decl : CT.getDecl()) {
     EXPECTED_TRY(validate(Decl, *Info));
   }
@@ -516,18 +582,27 @@ Validator::validate(const AST::Component::InstanceDecl &Decl,
   }
   if (Decl.isExportDecl()) {
     const auto &ED = Decl.getExport();
+    // The descriptor is checked before the export name.
+    EXPECTED_TRY(auto Info, validate(ED.getExternDesc(), false));
+    if (Info.K == ComponentContext::ExternInfo::Kind::Instance) {
+      Info.Inst = freshenDeclaredResources(Info.Inst, false);
+    }
     EXPECTED_TRY(ComponentName CN, parseExportName(ED.getName()));
-    if (!ComponentContext::addUniqueName(
-            CompCtx.top().ExportNames, ComponentContext::makeNameRecord(CN))) {
-      spdlog::error(ErrCode::Value::ComponentDuplicateName);
+    const auto DeclClash = ComponentContext::addUniqueName(
+        CompCtx.top().ExportNames, ComponentContext::makeNameRecord(CN));
+    if (DeclClash != ComponentContext::NameClash::None) {
+      const auto Code = DeclClash == ComponentContext::NameClash::Duplicate
+                            ? ErrCode::Value::ComponentExportNameConflict
+                            : ErrCode::Value::ComponentDeclExportNameConflict;
+      spdlog::error(Code);
       spdlog::error("    Export name '{}' is not strongly-unique."sv,
                     ED.getName());
-      return Unexpect(ErrCode::Value::ComponentDuplicateName);
+      return Unexpect(Code);
     }
-    EXPECTED_TRY(auto Info, validate(ED.getExternDesc(), false));
     defineExtern(Info);
-    EXPECTED_TRY(checkAnnotatedName(CN, Info));
-    recordResourceLabel(CN, Info);
+    EXPECTED_TRY(checkResourceNameability(Info, false));
+    EXPECTED_TRY(checkAnnotatedName(CN, Info, false));
+    recordResourceLabel(CN, Info, false);
     Exports.emplace(std::string(ED.getName()), Info);
     return {};
   }
@@ -565,10 +640,10 @@ Validator::validate(const AST::Component::ExternDesc &Desc,
       return Unexpect(ErrCode::Value::CoreTypeIndexOutOfBounds);
     }
     if (Entry->Mod == nullptr) {
-      spdlog::error(ErrCode::Value::InvalidTypeReference);
+      spdlog::error(ErrCode::Value::ComponentUnknownModuleType);
       spdlog::error("    Core type index {} is not a module type."sv,
                     Desc.getTypeIndex());
-      return Unexpect(ErrCode::Value::InvalidTypeReference);
+      return Unexpect(ErrCode::Value::ComponentUnknownModuleType);
     }
     Info.K = ComponentContext::ExternInfo::Kind::CoreModule;
     Info.CoreMod = Entry->Mod;
@@ -577,16 +652,16 @@ Validator::validate(const AST::Component::ExternDesc &Desc,
   case DescType::FuncType: {
     const auto *Entry = S.getType(Desc.getTypeIndex());
     if (Entry == nullptr) {
-      spdlog::error(ErrCode::Value::InvalidIndex);
+      spdlog::error(ErrCode::Value::CoreTypeIndexOutOfBounds);
       spdlog::error("    Type index {} out of bounds (size {})."sv,
                     Desc.getTypeIndex(), S.Types.size());
-      return Unexpect(ErrCode::Value::InvalidIndex);
+      return Unexpect(ErrCode::Value::CoreTypeIndexOutOfBounds);
     }
     if (Entry->DT == nullptr || !Entry->DT->isFuncType()) {
-      spdlog::error(ErrCode::Value::InvalidTypeReference);
+      spdlog::error(ErrCode::Value::ComponentUnknownFunctionType);
       spdlog::error("    Type index {} is not a function type."sv,
                     Desc.getTypeIndex());
-      return Unexpect(ErrCode::Value::InvalidTypeReference);
+      return Unexpect(ErrCode::Value::ComponentUnknownFunctionType);
     }
     Info.K = ComponentContext::ExternInfo::Kind::Func;
     Info.Func = {&Entry->DT->getFuncType(), Entry->Home, Entry->Remap};
@@ -614,26 +689,32 @@ Validator::validate(const AST::Component::ExternDesc &Desc,
     if (Desc.isEqType()) {
       const auto *Entry = S.getType(Desc.getTypeIndex());
       if (Entry == nullptr) {
-        spdlog::error(ErrCode::Value::InvalidIndex);
+        spdlog::error(ErrCode::Value::CoreTypeIndexOutOfBounds);
         spdlog::error("    Type index {} out of bounds (size {})."sv,
                       Desc.getTypeIndex(), S.Types.size());
-        return Unexpect(ErrCode::Value::InvalidIndex);
+        return Unexpect(ErrCode::Value::CoreTypeIndexOutOfBounds);
       }
       Info.Type = *Entry;
       return Info;
     }
     // (sub resource): fresh abstract resource type.
     const uint32_t Id = CompCtx.addResource(nullptr, &S, ImportSide);
-    Info.Type = {nullptr, &S, nullptr, nullptr, nullptr, Id};
+    Info.Type = {nullptr,
+                 &S,
+                 nullptr,
+                 nullptr,
+                 nullptr,
+                 Id,
+                 CompCtx.getResource(Id).NameId};
     return Info;
   }
   case DescType::ComponentType: {
     const auto *Entry = S.getType(Desc.getTypeIndex());
     if (Entry == nullptr) {
-      spdlog::error(ErrCode::Value::InvalidIndex);
+      spdlog::error(ErrCode::Value::CoreTypeIndexOutOfBounds);
       spdlog::error("    Type index {} out of bounds (size {})."sv,
                     Desc.getTypeIndex(), S.Types.size());
-      return Unexpect(ErrCode::Value::InvalidIndex);
+      return Unexpect(ErrCode::Value::CoreTypeIndexOutOfBounds);
     }
     if (Entry->Comp == nullptr) {
       spdlog::error(ErrCode::Value::InvalidTypeReference);
@@ -648,16 +729,16 @@ Validator::validate(const AST::Component::ExternDesc &Desc,
   case DescType::InstanceType: {
     const auto *Entry = S.getType(Desc.getTypeIndex());
     if (Entry == nullptr) {
-      spdlog::error(ErrCode::Value::InvalidIndex);
+      spdlog::error(ErrCode::Value::CoreTypeIndexOutOfBounds);
       spdlog::error("    Type index {} out of bounds (size {})."sv,
                     Desc.getTypeIndex(), S.Types.size());
-      return Unexpect(ErrCode::Value::InvalidIndex);
+      return Unexpect(ErrCode::Value::CoreTypeIndexOutOfBounds);
     }
     if (Entry->Inst == nullptr) {
-      spdlog::error(ErrCode::Value::InvalidTypeReference);
+      spdlog::error(ErrCode::Value::ComponentUnknownInstanceType);
       spdlog::error("    Type index {} is not an instance type."sv,
                     Desc.getTypeIndex());
-      return Unexpect(ErrCode::Value::InvalidTypeReference);
+      return Unexpect(ErrCode::Value::ComponentUnknownInstanceType);
     }
     Info.K = ComponentContext::ExternInfo::Kind::Instance;
     Info.Inst = Entry->Inst;
@@ -744,17 +825,37 @@ Validator::parseExportName(std::string_view Name) noexcept {
 Expect<ComponentContext::ExternInfo>
 Validator::defineImport(std::string_view Name,
                         const AST::Component::ExternDesc &Desc) noexcept {
-  EXPECTED_TRY(ComponentName CN, parseImportName(Name));
-  if (!ComponentContext::addUniqueName(CompCtx.top().ImportNames,
-                                       ComponentContext::makeNameRecord(CN))) {
-    spdlog::error(ErrCode::Value::ComponentImportNameConflict);
-    spdlog::error("    Import name '{}' is not strongly-unique."sv, Name);
-    return Unexpect(ErrCode::Value::ComponentImportNameConflict);
-  }
+  // The descriptor is checked before the import name.
   EXPECTED_TRY(auto Info, validate(Desc, true));
+  // Each instance import mints fresh identities for the resources the
+  // instance type itself declares (two imports of one shape differ).
+  if (Info.K == ComponentContext::ExternInfo::Kind::Instance) {
+    Info.Inst = freshenDeclaredResources(Info.Inst, true);
+  }
+  (void)0;
+  EXPECTED_TRY(ComponentName CN, parseImportName(Name));
+  const auto Rec = ComponentContext::makeNameRecord(CN);
+  const auto Clash =
+      ComponentContext::addUniqueName(CompCtx.top().ImportNames, Rec);
+  if (Clash != ComponentContext::NameClash::None) {
+    ErrCode::Value Code;
+    if (CompCtx.top().K != ComponentContext::Scope::Kind::Component) {
+      Code = Clash == ComponentContext::NameClash::Duplicate
+                 ? ErrCode::Value::ComponentImportNameConflict
+                 : ErrCode::Value::ComponentDeclImportNameConflict;
+    } else if (!Rec.IsPlainish) {
+      Code = ErrCode::Value::ComponentNameConflict;
+    } else {
+      Code = ErrCode::Value::ComponentImportNameConflict;
+    }
+    spdlog::error(Code);
+    spdlog::error("    Import name '{}' is not strongly-unique."sv, Name);
+    return Unexpect(Code);
+  }
   defineExtern(Info);
-  EXPECTED_TRY(checkAnnotatedName(CN, Info));
-  recordResourceLabel(CN, Info);
+  EXPECTED_TRY(checkResourceNameability(Info, true));
+  EXPECTED_TRY(checkAnnotatedName(CN, Info, true));
+  recordResourceLabel(CN, Info, true);
   return Info;
 }
 
@@ -762,11 +863,22 @@ Expect<ComponentContext::ExternInfo> Validator::defineExport(
     std::string_view Name, const ComponentContext::ExternInfo &Inferred,
     const std::optional<AST::Component::ExternDesc> &Ascribed) noexcept {
   EXPECTED_TRY(ComponentName CN, parseExportName(Name));
-  if (!ComponentContext::addUniqueName(CompCtx.top().ExportNames,
-                                       ComponentContext::makeNameRecord(CN))) {
-    spdlog::error(ErrCode::Value::ComponentDuplicateName);
+  const auto Rec = ComponentContext::makeNameRecord(CN);
+  const auto Clash =
+      ComponentContext::addUniqueName(CompCtx.top().ExportNames, Rec);
+  if (Clash != ComponentContext::NameClash::None) {
+    ErrCode::Value Code;
+    if (CompCtx.top().K != ComponentContext::Scope::Kind::Component) {
+      Code = ErrCode::Value::ComponentDeclExportNameConflict;
+    } else if (!Rec.IsPlainish ||
+               Clash == ComponentContext::NameClash::Duplicate) {
+      Code = ErrCode::Value::ComponentNameConflict;
+    } else {
+      Code = ErrCode::Value::ComponentExportNameConflict;
+    }
+    spdlog::error(Code);
     spdlog::error("    Export name '{}' is not strongly-unique."sv, Name);
-    return Unexpect(ErrCode::Value::ComponentDuplicateName);
+    return Unexpect(Code);
   }
   ComponentContext::ExternInfo Result = Inferred;
   if (Ascribed.has_value()) {
@@ -782,17 +894,29 @@ Expect<ComponentContext::ExternInfo> Validator::defineExport(
     }
     Result = Asc;
   }
+  // Exporting a resource re-introduces it under a fresh naming identity;
+  // the resource identity itself is preserved for matching.
+  if (Result.K == ComponentContext::ExternInfo::Kind::Type &&
+      Result.Type.ResourceId.has_value()) {
+    Result.Type.NameId = CompCtx.newNameId();
+  }
+  if (Result.K == ComponentContext::ExternInfo::Kind::Instance) {
+    Result.Inst = freshenDeclaredResources(Result.Inst, false);
+  }
   defineExtern(Result);
-  EXPECTED_TRY(checkAnnotatedName(CN, Result));
-  recordResourceLabel(CN, Result);
+  EXPECTED_TRY(checkResourceNameability(Result, false));
+  EXPECTED_TRY(checkAnnotatedName(CN, Result, false));
+  recordResourceLabel(CN, Result, false);
   return Result;
 }
 
 // Annotated plainnames: [constructor]r / [method]r.m / [static]r.m are only
-// valid on funcs whose signature agrees with resource r.
-Expect<void> Validator::checkAnnotatedName(
-    const ComponentName &Name,
-    const ComponentContext::ExternInfo &Info) noexcept {
+// valid on funcs whose signature agrees with a preceding resource r on the
+// same (import or export) side.
+Expect<void>
+Validator::checkAnnotatedName(const ComponentName &Name,
+                              const ComponentContext::ExternInfo &Info,
+                              bool IsImport) noexcept {
   const auto Kind = Name.getKind();
   if (Kind != ComponentNameKind::Constructor &&
       Kind != ComponentNameKind::Method && Kind != ComponentNameKind::Static) {
@@ -800,13 +924,12 @@ Expect<void> Validator::checkAnnotatedName(
   }
   if (Info.K != ComponentContext::ExternInfo::Kind::Func ||
       Info.Func.FT == nullptr) {
-    spdlog::error(ErrCode::Value::ComponentInvalidName);
+    spdlog::error(ErrCode::Value::ComponentIsNotFunc);
     spdlog::error(
         "    Annotated name '{}' is only allowed on function imports/exports."sv,
         Name.getOriginalName());
-    return Unexpect(ErrCode::Value::ComponentInvalidName);
+    return Unexpect(ErrCode::Value::ComponentIsNotFunc);
   }
-  // The first label must match a preceding resource import/export.
   std::string_view ResourceLabel;
   if (Kind == ComponentNameKind::Constructor) {
     ResourceLabel = Name.getDetail().get<ConstructorDetail>().Label;
@@ -815,26 +938,40 @@ Expect<void> Validator::checkAnnotatedName(
   } else {
     ResourceLabel = Name.getDetail().get<StaticDetail>().Resource;
   }
-  const auto &Labels = CompCtx.top().ResourceLabels;
-  auto It = Labels.find(std::string(ResourceLabel));
-  if (It == Labels.end()) {
-    spdlog::error(ErrCode::Value::ComponentInvalidName);
-    spdlog::error(
-        "    Annotated name '{}' does not match a preceding resource '{}'."sv,
-        Name.getOriginalName(), ResourceLabel);
-    return Unexpect(ErrCode::Value::ComponentInvalidName);
-  }
-  const uint32_t ResId = It->second;
+  auto &Scope = CompCtx.top();
+  const auto &Labels =
+      IsImport ? Scope.ImportResourceLabels : Scope.ExportResourceLabels;
+  const auto &Names =
+      IsImport ? Scope.ImportResourceNames : Scope.ExportResourceNames;
   const auto &FT = *Info.Func.FT;
+  // The resource reached through the signature must carry a name on this
+  // side which matches the annotation's first label.
+  auto CheckTarget = [&](uint32_t Target) noexcept -> Expect<void> {
+    auto NameIt = Names.find(Target);
+    if (NameIt == Names.end()) {
+      spdlog::error(ErrCode::Value::ComponentResourceNotNamed);
+      spdlog::error("    Resource used in '{}' has no name in this "
+                    "context."sv,
+                    Name.getOriginalName());
+      return Unexpect(ErrCode::Value::ComponentResourceNotNamed);
+    }
+    if (NameIt->second != ResourceLabel) {
+      spdlog::error(ErrCode::Value::AnnotatedFuncResourceName);
+      spdlog::error("    '{}' does not match resource '{}'."sv,
+                    Name.getOriginalName(), NameIt->second);
+      return Unexpect(ErrCode::Value::AnnotatedFuncResourceName);
+    }
+    return {};
+  };
 
-  // Resolves a valtype to own/borrow of ResId.
-  auto IsHandleOf = [this](const ComponentContext::QualValType &Q, bool WantOwn,
-                           uint32_t Id) noexcept -> bool {
+  // Resolves a valtype to own/borrow of a resource; Id filters when set.
+  auto HandleOf = [this](const ComponentContext::QualValType &Q,
+                         bool WantOwn) noexcept -> std::optional<uint32_t> {
     ComponentContext::TypeEntry Storage;
     const auto *Entry = resolveQualType(Q, Storage);
     if (Entry == nullptr || Entry->DT == nullptr ||
         !Entry->DT->isDefValType()) {
-      return false;
+      return std::nullopt;
     }
     const auto &DVT = Entry->DT->getDefValType();
     uint32_t HandleIdx = 0;
@@ -843,72 +980,407 @@ Expect<void> Validator::checkAnnotatedName(
     } else if (!WantOwn && DVT.isBorrowTy()) {
       HandleIdx = DVT.getBorrow().Idx;
     } else {
-      return false;
+      return std::nullopt;
     }
     const auto *Res = Entry->Home->getType(HandleIdx);
     if (Res == nullptr || !Res->ResourceId.has_value()) {
-      return false;
+      return std::nullopt;
     }
-    return ComponentContext::ResourceMap::apply(Entry->Remap,
-                                                *Res->ResourceId) == Id;
+    return ComponentContext::ResourceMap::apply(Entry->Remap, *Res->ResourceId);
   };
 
   if (Kind == ComponentNameKind::Constructor) {
-    // Result must be (own R) or (result (own R) (error E)?).
-    bool Ok = false;
-    if (FT.getResultList().size() == 1) {
-      ComponentContext::QualValType Q{FT.getResultList()[0].getValType(),
-                                      Info.Func.Home, Info.Func.Remap};
-      Ok = IsHandleOf(Q, true, ResId);
-      if (!Ok) {
-        ComponentContext::TypeEntry Storage;
-        const auto *Entry = resolveQualType(Q, Storage);
-        if (Entry != nullptr && Entry->DT != nullptr &&
-            Entry->DT->isDefValType() &&
-            Entry->DT->getDefValType().isResultTy()) {
-          const auto &Res = Entry->DT->getDefValType().getResult();
-          if (Res.ValTy.has_value()) {
-            Ok = IsHandleOf({*Res.ValTy, Entry->Home, Entry->Remap}, true,
-                            ResId);
-          }
+    // Shape first: exactly one result of (own T) or (result (own T) e?).
+    if (FT.getResultList().size() != 1) {
+      spdlog::error(ErrCode::Value::AnnotatedCtorReturnOne);
+      spdlog::error("    Constructor '{}' should return one value."sv,
+                    Name.getOriginalName());
+      return Unexpect(ErrCode::Value::AnnotatedCtorReturnOne);
+    }
+    ComponentContext::QualValType Q{FT.getResultList()[0].getValType(),
+                                    Info.Func.Home, Info.Func.Remap};
+    auto Target = HandleOf(Q, true);
+    if (!Target.has_value()) {
+      // Unwrap (result (own T) e?).
+      ComponentContext::TypeEntry Storage;
+      const auto *Entry = resolveQualType(Q, Storage);
+      if (Entry != nullptr && Entry->DT != nullptr &&
+          Entry->DT->isDefValType() &&
+          Entry->DT->getDefValType().isResultTy()) {
+        const auto &Res = Entry->DT->getDefValType().getResult();
+        if (Res.ValTy.has_value()) {
+          Target = HandleOf({*Res.ValTy, Entry->Home, Entry->Remap}, true);
         }
       }
     }
-    if (!Ok) {
-      spdlog::error(ErrCode::Value::ComponentInvalidName);
+    if (!Target.has_value()) {
+      spdlog::error(ErrCode::Value::AnnotatedCtorReturn);
       spdlog::error("    Constructor '{}' must return (own {})."sv,
                     Name.getOriginalName(), ResourceLabel);
-      return Unexpect(ErrCode::Value::ComponentInvalidName);
+      return Unexpect(ErrCode::Value::AnnotatedCtorReturn);
     }
+    EXPECTED_TRY(CheckTarget(*Target));
   } else if (Kind == ComponentNameKind::Method) {
-    // First parameter must be (param "self" (borrow R)).
-    bool Ok = false;
-    if (!FT.getParamList().empty()) {
-      const auto &Self = FT.getParamList()[0];
-      Ok = Self.getLabel() == "self"sv &&
-           IsHandleOf({Self.getValType(), Info.Func.Home, Info.Func.Remap},
-                      false, ResId);
+    if (FT.getParamList().empty()) {
+      spdlog::error(ErrCode::Value::AnnotatedMethodArgs);
+      spdlog::error("    Method '{}' should have at least one argument."sv,
+                    Name.getOriginalName());
+      return Unexpect(ErrCode::Value::AnnotatedMethodArgs);
     }
-    if (!Ok) {
-      spdlog::error(ErrCode::Value::ComponentInvalidName);
+    const auto &Self = FT.getParamList()[0];
+    if (Self.getLabel() != "self"sv) {
+      spdlog::error(ErrCode::Value::AnnotatedMethodSelf);
       spdlog::error(
-          "    Method '{}' must take (param \"self\" (borrow {})) first."sv,
+          "    Method '{}' should have a first argument called `self`."sv,
+          Name.getOriginalName());
+      return Unexpect(ErrCode::Value::AnnotatedMethodSelf);
+    }
+    auto Target =
+        HandleOf({Self.getValType(), Info.Func.Home, Info.Func.Remap}, false);
+    if (!Target.has_value()) {
+      spdlog::error(ErrCode::Value::AnnotatedMethodBorrow);
+      spdlog::error(
+          "    Method '{}' should take a first argument of (borrow {})."sv,
           Name.getOriginalName(), ResourceLabel);
-      return Unexpect(ErrCode::Value::ComponentInvalidName);
+      return Unexpect(ErrCode::Value::AnnotatedMethodBorrow);
+    }
+    EXPECTED_TRY(CheckTarget(*Target));
+  } else {
+    const bool LabelKnown = Labels.count(std::string(ResourceLabel)) != 0;
+    if (!LabelKnown) {
+      spdlog::error(ErrCode::Value::AnnotatedStaticUnknown);
+      spdlog::error(
+          "    Static '{}' resource name is not known in this context."sv,
+          Name.getOriginalName());
+      return Unexpect(ErrCode::Value::AnnotatedStaticUnknown);
     }
   }
   return {};
 }
 
-void Validator::recordResourceLabel(
-    const ComponentName &Name,
-    const ComponentContext::ExternInfo &Info) noexcept {
+void Validator::recordResourceLabel(const ComponentName &Name,
+                                    const ComponentContext::ExternInfo &Info,
+                                    bool IsImport) noexcept {
   if (Name.getKind() == ComponentNameKind::Label &&
       Info.K == ComponentContext::ExternInfo::Kind::Type &&
       Info.Type.ResourceId.has_value()) {
-    CompCtx.top().ResourceLabels.emplace(std::string(Name.getOriginalName()),
-                                         *Info.Type.ResourceId);
+    auto &S = CompCtx.top();
+    auto &Labels = IsImport ? S.ImportResourceLabels : S.ExportResourceLabels;
+    auto &Names = IsImport ? S.ImportResourceNames : S.ExportResourceNames;
+    Labels.emplace(std::string(Name.getOriginalName()), *Info.Type.ResourceId);
+    Names.emplace(*Info.Type.ResourceId, std::string(Name.getOriginalName()));
   }
+}
+
+// Resources referenced by a non-type extern must have been introduced by a
+// preceding import (for imports) or export (for exports) on the same side.
+// The named-types rule (mirrors the reference validator): flags, enums,
+// records, variants, and resources are never anonymous — any reference to
+// them from an imported/exported type must have been introduced by a
+// preceding import (for imports) or import/export (for exports). Tuples,
+// lists, options, and results may stay anonymous but their components are
+// checked recursively. Instance externs introduce their exports in order.
+// NOLINTBEGIN(misc-no-recursion)
+bool Validator::namedValType(const ComponentContext::QualValType &Q,
+                             bool IsImport) noexcept {
+  if (Q.VT.isPrimValType() || Q.Home == nullptr) {
+    return true;
+  }
+  ComponentContext::TypeEntry Storage;
+  const auto *Entry = resolveQualType(Q, Storage);
+  if (Entry == nullptr) {
+    return true;
+  }
+  return namedTypeEntry(*Entry, IsImport);
+}
+
+bool Validator::namedTypeEntry(const ComponentContext::TypeEntry &E,
+                               bool IsImport) noexcept {
+  auto &S = CompCtx.top();
+  const auto &NamedTys = IsImport ? S.ImportNamedTypes : S.ExportNamedTypes;
+  const auto &NamedRes =
+      IsImport ? S.ImportNamedResources : S.ExportNamedResources;
+  if (E.ResourceId.has_value()) {
+    return E.NameId.has_value() && NamedRes.count(*E.NameId) != 0;
+  }
+  if (E.DT == nullptr || !E.DT->isDefValType()) {
+    return true;
+  }
+  const auto &D = E.DT->getDefValType();
+  if (D.isPrimValType()) {
+    return true;
+  }
+  // Never-anonymous shapes must be in the named set themselves. Type
+  // substitution at instantiation preserves structure, so a structurally
+  // equal named type also satisfies the rule.
+  if (D.isFlagsTy() || D.isEnumTy() || D.isRecordTy() || D.isVariantTy()) {
+    if (NamedTys.count(E.DT) != 0) {
+      return true;
+    }
+    for (const auto &[Named, Home] : NamedTys) {
+      if (Named->isDefValType()) {
+        ComponentContext::TypeEntry Probe;
+        Probe.DT = Named;
+        Probe.Home = Home;
+        ResourceSubst Scratch;
+        if (matchNormalVal(normalizeEntry(E), normalizeEntry(Probe), Scratch)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+  auto Sub = [&](const ComponentValType &VT) noexcept {
+    return namedValType({VT, E.Home, E.Remap}, IsImport);
+  };
+  if (D.isTupleTy()) {
+    for (const auto &Ty : D.getTuple().Types) {
+      if (!Sub(Ty)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (D.isListTy()) {
+    return Sub(D.getList().ValTy);
+  }
+  if (D.isOptionTy()) {
+    return Sub(D.getOption().ValTy);
+  }
+  if (D.isResultTy()) {
+    const auto &R = D.getResult();
+    return (!R.ValTy.has_value() || Sub(*R.ValTy)) &&
+           (!R.ErrTy.has_value() || Sub(*R.ErrTy));
+  }
+  if (D.isOwnTy() || D.isBorrowTy()) {
+    const uint32_t Idx = D.isOwnTy() ? D.getOwn().Idx : D.getBorrow().Idx;
+    const auto *Res = E.Home->getType(Idx);
+    if (Res == nullptr || !Res->ResourceId.has_value()) {
+      return true;
+    }
+    const uint32_t Eff =
+        ComponentContext::ResourceMap::apply(E.Remap, *Res->ResourceId);
+    const uint32_t NameId =
+        Eff != *Res->ResourceId
+            ? CompCtx.getResource(Eff).NameId
+            : Res->NameId.value_or(CompCtx.getResource(Eff).NameId);
+    return NamedRes.count(NameId) != 0;
+  }
+  return true;
+}
+
+// Checks the type being introduced itself: its immediate components must be
+// named, while the type itself is exempt (the extern names it).
+bool Validator::allValTypesNamed(const ComponentContext::TypeEntry &E,
+                                 bool IsImport) noexcept {
+  if (E.ResourceId.has_value()) {
+    return true;
+  }
+  if (E.Comp != nullptr) {
+    return true;
+  }
+  if (E.Inst != nullptr) {
+    for (const auto &[Name, Sub] : E.Inst->Exports) {
+      if (!namedExtern(Sub, IsImport)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (E.DT == nullptr) {
+    return true;
+  }
+  if (E.DT->isFuncType()) {
+    const auto &FT = E.DT->getFuncType();
+    for (const auto &P : FT.getParamList()) {
+      if (!namedValType({P.getValType(), E.Home, E.Remap}, IsImport)) {
+        return false;
+      }
+    }
+    for (const auto &R : FT.getResultList()) {
+      if (!namedValType({R.getValType(), E.Home, E.Remap}, IsImport)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (!E.DT->isDefValType()) {
+    return true;
+  }
+  const auto &D = E.DT->getDefValType();
+  if (D.isPrimValType() || D.isFlagsTy() || D.isEnumTy()) {
+    return true;
+  }
+  auto Sub = [&](const ComponentValType &VT) noexcept {
+    return namedValType({VT, E.Home, E.Remap}, IsImport);
+  };
+  if (D.isRecordTy()) {
+    for (const auto &LT : D.getRecord().LabelTypes) {
+      if (!Sub(LT.getValType())) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (D.isVariantTy()) {
+    for (const auto &[Label, Ty] : D.getVariant().Cases) {
+      if (Ty.has_value() && !Sub(*Ty)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (D.isTupleTy()) {
+    for (const auto &Ty : D.getTuple().Types) {
+      if (!Sub(Ty)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (D.isListTy()) {
+    return Sub(D.getList().ValTy);
+  }
+  if (D.isOptionTy()) {
+    return Sub(D.getOption().ValTy);
+  }
+  if (D.isResultTy()) {
+    const auto &R = D.getResult();
+    return (!R.ValTy.has_value() || Sub(*R.ValTy)) &&
+           (!R.ErrTy.has_value() || Sub(*R.ErrTy));
+  }
+  if (D.isOwnTy() || D.isBorrowTy()) {
+    const auto &NamedRes = IsImport ? CompCtx.top().ImportNamedResources
+                                    : CompCtx.top().ExportNamedResources;
+    const uint32_t Idx = D.isOwnTy() ? D.getOwn().Idx : D.getBorrow().Idx;
+    const auto *Res = E.Home->getType(Idx);
+    if (Res == nullptr || !Res->ResourceId.has_value()) {
+      return true;
+    }
+    const uint32_t Eff =
+        ComponentContext::ResourceMap::apply(E.Remap, *Res->ResourceId);
+    const uint32_t NameId =
+        Eff != *Res->ResourceId
+            ? CompCtx.getResource(Eff).NameId
+            : Res->NameId.value_or(CompCtx.getResource(Eff).NameId);
+    return NamedRes.count(NameId) != 0;
+  }
+  return true;
+}
+
+// Validates and registers an extern for the named-types rule; instance
+// externs recurse and introduce their exports in declaration order.
+bool Validator::namedExtern(const ComponentContext::ExternInfo &Info,
+                            bool IsImport) noexcept {
+  using Kind = ComponentContext::ExternInfo::Kind;
+  auto &S = CompCtx.top();
+  switch (Info.K) {
+  case Kind::CoreModule:
+  case Kind::Component:
+    return true;
+  case Kind::Type: {
+    if (!allValTypesNamed(Info.Type, IsImport)) {
+      return false;
+    }
+    // Introduce: imported types are usable by exports as well.
+    if (Info.Type.NameId.has_value()) {
+      if (IsImport) {
+        S.ImportNamedResources.insert(*Info.Type.NameId);
+        S.ExportNamedResources.insert(*Info.Type.NameId);
+      } else {
+        S.ExportNamedResources.insert(*Info.Type.NameId);
+      }
+    } else if (Info.Type.DT != nullptr && Info.Type.DT->isDefValType()) {
+      if (IsImport) {
+        S.ImportNamedTypes.emplace(Info.Type.DT, Info.Type.Home);
+        S.ExportNamedTypes.emplace(Info.Type.DT, Info.Type.Home);
+      } else {
+        S.ExportNamedTypes.emplace(Info.Type.DT, Info.Type.Home);
+      }
+    }
+    return true;
+  }
+  case Kind::Instance: {
+    if (Info.Inst == nullptr) {
+      return true;
+    }
+    auto Walk = [&](const ComponentContext::ExternInfo &Sub) noexcept {
+      return namedExtern(Sub, IsImport);
+    };
+    if (!Info.Inst->Order.empty()) {
+      for (const auto &Name : Info.Inst->Order) {
+        auto It = Info.Inst->Exports.find(Name);
+        if (It != Info.Inst->Exports.end() && !Walk(It->second)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    for (const auto &[Name, Sub] : Info.Inst->Exports) {
+      if (!Walk(Sub)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  case Kind::Func: {
+    if (Info.Func.FT == nullptr) {
+      return true;
+    }
+    for (const auto &P : Info.Func.FT->getParamList()) {
+      if (!namedValType({P.getValType(), Info.Func.Home, Info.Func.Remap},
+                        IsImport)) {
+        return false;
+      }
+    }
+    for (const auto &R : Info.Func.FT->getResultList()) {
+      if (!namedValType({R.getValType(), Info.Func.Home, Info.Func.Remap},
+                        IsImport)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  case Kind::Value:
+    return namedValType(Info.Value, IsImport);
+  }
+  return true;
+}
+// NOLINTEND(misc-no-recursion)
+
+Expect<void>
+Validator::checkResourceNameability(const ComponentContext::ExternInfo &Info,
+                                    bool IsImport) noexcept {
+  // Instance-type declarations do not enforce the named-types rule; their
+  // shapes are re-checked when imported or exported.
+  if (CompCtx.top().K == ComponentContext::Scope::Kind::InstanceType) {
+    return {};
+  }
+  if (namedExtern(Info, IsImport)) {
+    return {};
+  }
+  using Kind = ComponentContext::ExternInfo::Kind;
+  ErrCode::Value Code;
+  switch (Info.K) {
+  case Kind::Func:
+    Code = IsImport ? ErrCode::Value::ComponentFuncNotValidImport
+                    : ErrCode::Value::ComponentFuncNotValidExport;
+    break;
+  case Kind::Instance:
+    Code = IsImport ? ErrCode::Value::ComponentInstanceNotValidImport
+                    : ErrCode::Value::ComponentInstanceNotValidExport;
+    break;
+  default:
+    Code = IsImport ? ErrCode::Value::ComponentTypeNotValidImport
+                    : ErrCode::Value::ComponentTypeNotValidExport;
+    break;
+  }
+  spdlog::error(Code);
+  spdlog::error(
+      "    A referenced type or resource was not introduced by a preceding "
+      "{}."sv,
+      IsImport ? "import"sv : "import or export"sv);
+  return Unexpect(Code);
 }
 
 // External view of an inline core module: its imports in order and the
@@ -955,6 +1427,14 @@ Validator::buildCoreModuleInfo(const AST::Module &Mod) noexcept {
       break;
     default:
       break;
+    }
+    for (const auto &[ModName, Name, Prev] : Info->Imports) {
+      if (ModName == Imp.getModuleName() && Name == Imp.getExternalName()) {
+        spdlog::error(ErrCode::Value::ComponentDuplicateImportName);
+        spdlog::error("    Module import '{}'.'{}' name conflict."sv, ModName,
+                      Name);
+        return Unexpect(ErrCode::Value::ComponentDuplicateImportName);
+      }
     }
     Info->Imports.emplace_back(std::string(Imp.getModuleName()),
                                std::string(Imp.getExternalName()), Ext);

@@ -66,6 +66,7 @@ std::string toLowerCopy(std::string_view SV) noexcept {
 ComponentContext::NameRecord
 ComponentContext::makeNameRecord(const ComponentName &Name) noexcept {
   NameRecord R;
+  R.Original = std::string(Name.getOriginalName());
   switch (Name.getKind()) {
   case ComponentNameKind::Constructor:
     R.HasAnnotation = true;
@@ -91,13 +92,30 @@ ComponentContext::makeNameRecord(const ComponentName &Name) noexcept {
     R.StrippedExact = std::string(Name.getOriginalName());
     break;
   }
-  R.Stripped = toLowerCopy(R.StrippedExact);
+  R.IsPlainish = R.IsPlainLabel || R.HasAnnotation;
+  // Case-folding models the acronym rule, which only applies to labels and
+  // interface names; dep/url/integrity names compare exactly.
+  switch (Name.getKind()) {
+  case ComponentNameKind::LockedDep:
+  case ComponentNameKind::UnlockedDep:
+  case ComponentNameKind::Url:
+  case ComponentNameKind::Integrity:
+    R.Stripped = R.StrippedExact;
+    break;
+  default:
+    R.Stripped = toLowerCopy(R.StrippedExact);
+    break;
+  }
   return R;
 }
 
-bool ComponentContext::addUniqueName(std::vector<NameRecord> &Names,
-                                     const NameRecord &N) noexcept {
+ComponentContext::NameClash
+ComponentContext::addUniqueName(std::vector<NameRecord> &Names,
+                                const NameRecord &N) noexcept {
   for (const auto &E : Names) {
+    if (E.Original == N.Original) {
+      return NameClash::Duplicate;
+    }
     if (E.Stripped == N.Stripped) {
       // `l` and `[constructor]l` (for the *same* label) are the one
       // strongly-unique annotated pair.
@@ -105,7 +123,7 @@ bool ComponentContext::addUniqueName(std::vector<NameRecord> &Names,
                                   (N.IsConstructor && E.IsPlainLabel)) &&
                                  E.StrippedExact == N.StrippedExact;
       if (!CtorException) {
-        return false;
+        return NameClash::Conflict;
       }
       continue;
     }
@@ -114,11 +132,11 @@ bool ComponentContext::addUniqueName(std::vector<NameRecord> &Names,
          E.DottedFirst == N.StrippedExact) ||
         (E.IsPlainLabel && N.IsDottedSame &&
          N.DottedFirst == E.StrippedExact)) {
-      return false;
+      return NameClash::Conflict;
     }
   }
   Names.push_back(N);
-  return true;
+  return NameClash::None;
 }
 
 } // namespace Validator

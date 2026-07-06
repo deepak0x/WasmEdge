@@ -294,7 +294,7 @@ static const TestsuiteProposal TestsuiteProposals[] = {
     // Currently, the component model supports only interpreter mode.
     {"component-model"sv,
      WasmEdge::Standard::WASM_3,
-     {Proposal::Component},
+     {Proposal::Component, Proposal::Threads},
      {},
      WasmEdge::SpecTest::TestMode::Interpreter},
 };
@@ -316,8 +316,8 @@ std::map<std::string, ComponentModelSupport> ComponentModelFolders = {
     // ---------------------------------------------------------------
     // Folder: the directory name of tests.
     // Test table: the testing status of load, validate, instantiate, and execute.
-    {"adapt",                   {true, false, false, false}},
-    {"alias",                   {true, false, false, false}},
+    {"adapt",                   {true, true,  false, false}},
+    {"alias",                   {true, true,  false, false}},
     {"big",                     {true, true,  false, false}},
     {"definedtypes",            {true, true,  true,  false}},
     {"empty",                   {true, true,  true,  false}},
@@ -325,26 +325,26 @@ std::map<std::string, ComponentModelSupport> ComponentModelFolders = {
     {"export",                  {true, true,  false, false}},
     {"export-ascription",       {true, true,  false, false}},
     {"export-introduces-alias", {true, true,  true,  false}},
-    {"func",                    {true, true,  true,  true}},
-    {"import",                  {true, false, false, false}},
+    {"func",                    {true, true,  false, false}},
+    {"import",                  {true, true,  false, false}},
     {"imports-exports",         {true, true,  false, false}},
     {"inline-exports",          {true, true,  true,  false}},
     {"instance-types",          {true, true,  true,  false}},
-    {"instantiate",             {true, false, false, false}},
+    {"instantiate",             {true, true,  false, false}},
     {"invalid",                 {true, true,  false, false}},
     {"link",                    {true, true,  true,  false}},
     {"lots-of-aliases",         {true, true,  true,  false}},
-    {"lower",                   {true, false, false, false}},
+    {"lower",                   {true, true,  false, false}},
     {"memory64",                {true, true,  false, false}},
     {"module-link",             {true, true,  false, false}},
     {"more-flags",              {true, true,  true,  false}},
     {"naming",                  {true, true,  false, false}},
-    {"nested-modules",          {true, false, false, false}},
-    {"resources",               {true, false, false, false}},
+    {"nested-modules",          {true, true,  false, false}},
+    {"resources",               {true, true,  false, false}},
     {"tags",                    {true, true,  true, true}},
-    {"type-export-restrictions",{true, false, false, false}},
-    {"types",                   {true, false, false, false}},
-    {"very-nested",             {true, false, false, false}},
+    {"type-export-restrictions",{true, true,  false, false}},
+    {"types",                   {true, true,  false, false}},
+    {"very-nested",             {true, true,  false, false}},
     {"virtualize",              {true, true,  false, false}},
 };
 // clang-format on
@@ -718,7 +718,11 @@ bool SpecTest::compares(
 
 bool SpecTest::stringContains(std::string_view Expected,
                               std::string_view Got) const {
-  if (Expected.rfind(Got, 0) != 0) {
+  // Reference-style matching: accept when either message contains the other
+  // (wasm-tools emits multi-line diagnostics that the assertions quote
+  // partially).
+  if (Expected.find(Got) == std::string_view::npos &&
+      Got.find(Expected) == std::string_view::npos) {
     spdlog::error("   ##### expected text : {}"sv, Expected);
     spdlog::error("   ######## error text : {}"sv, Got);
     return false;

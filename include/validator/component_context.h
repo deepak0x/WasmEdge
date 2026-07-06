@@ -37,9 +37,13 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace WasmEdge {
+namespace AST {
+class Module;
+} // namespace AST
 namespace Validator {
 
 class ComponentContext {
@@ -70,9 +74,11 @@ public:
     std::map<std::string, CoreExternInfo, std::less<>> Exports;
   };
 
-  /// Export table of a core:instance.
+  /// Export table of a core:instance. Synthetic marks inline-export
+  /// instances (diagnostics differ from instantiated ones).
   struct CoreInstanceInfo {
     std::map<std::string, CoreExternInfo, std::less<>> Exports;
+    bool Synthetic = false;
   };
 
   /// Entry of the core:type index space: a rectype member or a moduletype.
@@ -132,6 +138,9 @@ public:
     const InstanceInfo *Inst = nullptr;
     const ComponentInfo *Comp = nullptr;
     std::optional<uint32_t> ResourceId;
+    // Naming identity for resources: re-exports mint a fresh NameId while
+    // keeping ResourceId, so matching and the named-types rule can differ.
+    std::optional<uint32_t> NameId;
   };
 
   /// Resolved externdesc: the typed identity of an import/export/entity.
@@ -159,7 +168,11 @@ public:
   /// resource ids this info binds (its own declarations).
   struct InstanceInfo {
     ExternMap Exports;
+    // Export names in declaration order (introduction order matters for the
+    // named-types rule).
+    std::vector<std::string> Order;
     const Scope *DeclScope = nullptr;
+    bool Synthetic = false;
   };
 
   /// External shape of a component. Imports stay ordered because argument
@@ -168,6 +181,9 @@ public:
     std::vector<std::pair<std::string, ExternInfo>> Imports;
     ExternMap Exports;
     const Scope *DeclScope = nullptr;
+    // True when built from a componenttype declaration (imported shapes);
+    // inline bodies keep plain diagnostics on their instances.
+    bool FromDecl = false;
   };
 
   /// Entry of the value index space; linearity requires Consumed once.
@@ -184,6 +200,7 @@ public:
     const AST::Component::ResourceType *RT = nullptr;
     const Scope *Origin = nullptr;
     bool FromImport = false;
+    uint32_t NameId = 0;
   };
 
   // ==========================================================================
@@ -191,6 +208,7 @@ public:
   // ==========================================================================
 
   struct NameRecord {
+    std::string Original;      // the full name as written
     std::string Stripped;      // annotation removed, acronyms lowercased
     std::string StrippedExact; // annotation removed, case preserved
     std::string DottedFirst;   // first label of a dotted annotated name
@@ -198,7 +216,11 @@ public:
     bool IsConstructor = false;
     bool IsPlainLabel = false;
     bool IsDottedSame = false; // [*]l.l with the same label twice
+    bool IsPlainish = false;   // label or annotated label (not interface/dep)
   };
+
+  /// Result of adding a name: exact duplicate vs strong-uniqueness conflict.
+  enum class NameClash : uint8_t { None, Duplicate, Conflict };
 
   // ==========================================================================
   // Scope: one per component / componenttype / instancetype / moduletype.
@@ -240,8 +262,21 @@ public:
     // Naming state.
     std::vector<NameRecord> ImportNames;
     std::vector<NameRecord> ExportNames;
-    // Plain resource label -> resource id, for [constructor]/[method]/[static].
-    std::unordered_map<std::string, uint32_t> ResourceLabels;
+    // Plain resource label -> resource id, per side, for
+    // [constructor]/[method]/[static] name checks.
+    std::unordered_map<std::string, uint32_t> ImportResourceLabels;
+    std::unordered_map<std::string, uint32_t> ExportResourceLabels;
+    std::unordered_map<uint32_t, std::string> ImportResourceNames;
+    std::unordered_map<uint32_t, std::string> ExportResourceNames;
+    // Resource ids introduced by preceding imports/exports (nameability).
+    std::unordered_set<uint32_t> ImportNamedResources;
+    std::unordered_set<uint32_t> ExportNamedResources;
+    // Composite defined types introduced by preceding imports/exports,
+    // with the scope their inner indices resolve in.
+    std::unordered_map<const AST::Component::DefType *, const Scope *>
+        ImportNamedTypes;
+    std::unordered_map<const AST::Component::DefType *, const Scope *>
+        ExportNamedTypes;
 
     uint32_t getSortSize(AST::Component::Sort::SortType ST) const noexcept;
     uint32_t
@@ -323,10 +358,12 @@ public:
   // Resource registry.
   // ==========================================================================
 
+  uint32_t newNameId() noexcept { return NextNameId++; }
+
   uint32_t addResource(const AST::Component::ResourceType *RT,
                        const Scope *Origin, bool FromImport) noexcept {
     uint32_t Id = static_cast<uint32_t>(Resources.size());
-    Resources.push_back({RT, Origin, FromImport});
+    Resources.push_back({RT, Origin, FromImport, newNameId()});
     return Id;
   }
 
@@ -391,9 +428,9 @@ public:
   /// Builds the comparison record for a parsed name.
   static NameRecord makeNameRecord(const ComponentName &Name) noexcept;
 
-  /// Appends N to Names; false if N is not strongly-unique against them.
-  static bool addUniqueName(std::vector<NameRecord> &Names,
-                            const NameRecord &N) noexcept;
+  /// Appends N to Names, reporting how it clashes with an earlier name.
+  static NameClash addUniqueName(std::vector<NameRecord> &Names,
+                                 const NameRecord &N) noexcept;
 
   /// RAII scope push/pop for validation bodies with early returns.
   class ScopedScope {
@@ -410,7 +447,13 @@ public:
     Scope &S;
   };
 
+  /// Core modules whose function bodies still need validation (deferred to
+  /// the end of the root component).
+  std::vector<const AST::Module *> DeferredModules;
+
   void reset() noexcept {
+    NextNameId = 0;
+    DeferredModules.clear();
     Stack.clear();
     ScopeArena.clear();
     Resources.clear();
@@ -432,6 +475,7 @@ private:
     }
   };
 
+  uint32_t NextNameId = 0;
   std::vector<Scope *> Stack;
   std::deque<Scope> ScopeArena;
   std::vector<ResourceEntry> Resources;
