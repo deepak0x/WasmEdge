@@ -129,10 +129,13 @@ public:
   std::string &getName() noexcept { return Name; }
   const ExternDesc &getExternDesc() const noexcept { return Desc; }
   ExternDesc &getExternDesc() noexcept { return Desc; }
+  std::vector<std::string> &getImplements() noexcept { return Implements; }
+  Span<const std::string> getImplements() const noexcept { return Implements; }
 
 private:
   std::string Name;
   ExternDesc Desc;
+  std::vector<std::string> Implements;
 };
 
 /// AST Component::ImportDecl node.

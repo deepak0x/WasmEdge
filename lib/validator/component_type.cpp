@@ -354,7 +354,8 @@ Validator::validate(const AST::Component::DefType &DType) noexcept {
   if (DType.isDefValType()) {
     EXPECTED_TRY(validate(DType.getDefValType()));
     auto &S = CompCtx.top();
-    S.Types.push_back({&DType, &S, nullptr, nullptr, nullptr, {}, {}});
+    S.Types.push_back(
+        {&DType, &S, nullptr, nullptr, nullptr, {}, CompCtx.newNameId()});
   } else if (DType.isFuncType()) {
     EXPECTED_TRY(validate(DType.getFuncType()));
     auto &S = CompCtx.top();
@@ -603,6 +604,9 @@ Validator::validate(const AST::Component::InstanceDecl &Decl,
     defineExtern(Info);
     EXPECTED_TRY(checkResourceNameability(Info, false));
     EXPECTED_TRY(checkAnnotatedName(CN, Info, false));
+    EXPECTED_TRY(checkImplements(
+        CN, ED.getImplements(),
+        Info.K == ComponentContext::ExternInfo::Kind::Instance));
     recordResourceLabel(CN, Info, false);
     Exports.emplace(std::string(ED.getName()), Info);
     return {};
@@ -616,7 +620,8 @@ Validator::validate(const AST::Component::ComponentDecl &Decl,
                     ComponentContext::ComponentInfo &Info) noexcept {
   if (Decl.isImportDecl()) {
     const auto &ID = Decl.getImport();
-    EXPECTED_TRY(auto Ext, defineImport(ID.getName(), ID.getExternDesc()));
+    EXPECTED_TRY(auto Ext, defineImport(ID.getName(), ID.getExternDesc(),
+                                        ID.getImplements()));
     Info.Imports.emplace_back(std::string(ID.getName()), Ext);
     return {};
   }
@@ -696,6 +701,8 @@ Validator::validate(const AST::Component::ExternDesc &Desc,
         return Unexpect(ErrCode::Value::CoreTypeIndexOutOfBounds);
       }
       Info.Type = *Entry;
+      // The created index carries a fresh naming identity.
+      Info.Type.NameId = CompCtx.newNameId();
       return Info;
     }
     // (sub resource): fresh abstract resource type.
@@ -823,9 +830,46 @@ Validator::parseExportName(std::string_view Name) noexcept {
   }
 }
 
+Expect<void> Validator::checkImplements(const ComponentName &CN,
+                                        Span<const std::string> Impls,
+                                        bool IsInstance) noexcept {
+  if (Impls.empty()) {
+    return {};
+  }
+  for (const auto &I : Impls) {
+    auto Parsed = parseImportName(I);
+    if (!Parsed.has_value()) {
+      spdlog::error(ErrCode::Value::ComponentImplementsName);
+      spdlog::error("    `implements` value `{}` is not a valid name"sv, I);
+      return Unexpect(ErrCode::Value::ComponentImplementsName);
+    }
+    if (Parsed->getKind() != ComponentNameKind::InterfaceType) {
+      spdlog::error(ErrCode::Value::ComponentImplementsInterface);
+      spdlog::error("    `implements` value `{}` must be an interface"sv, I);
+      return Unexpect(ErrCode::Value::ComponentImplementsInterface);
+    }
+  }
+  if (CN.getKind() != ComponentNameKind::Label &&
+      CN.getKind() != ComponentNameKind::Constructor &&
+      CN.getKind() != ComponentNameKind::Method &&
+      CN.getKind() != ComponentNameKind::Static) {
+    spdlog::error(ErrCode::Value::ComponentImplementsPlain);
+    spdlog::error("    name `{}` is not valid with `implements`"sv,
+                  CN.getOriginalName());
+    return Unexpect(ErrCode::Value::ComponentImplementsPlain);
+  }
+  if (!IsInstance) {
+    spdlog::error(ErrCode::Value::ComponentImplementsInstance);
+    spdlog::error("    only instance names can have an `implements`"sv);
+    return Unexpect(ErrCode::Value::ComponentImplementsInstance);
+  }
+  return {};
+}
+
 Expect<ComponentContext::ExternInfo>
 Validator::defineImport(std::string_view Name,
-                        const AST::Component::ExternDesc &Desc) noexcept {
+                        const AST::Component::ExternDesc &Desc,
+                        Span<const std::string> Impls) noexcept {
   // The descriptor is checked before the import name.
   EXPECTED_TRY(auto Info, validate(Desc, true));
   // Each instance import mints fresh identities for the resources the
@@ -835,6 +879,8 @@ Validator::defineImport(std::string_view Name,
   }
   (void)0;
   EXPECTED_TRY(ComponentName CN, parseImportName(Name));
+  EXPECTED_TRY(checkImplements(
+      CN, Impls, Info.K == ComponentContext::ExternInfo::Kind::Instance));
   const auto Rec = ComponentContext::makeNameRecord(CN);
   const auto Clash =
       ComponentContext::addUniqueName(CompCtx.top().ImportNames, Rec);
@@ -862,8 +908,11 @@ Validator::defineImport(std::string_view Name,
 
 Expect<ComponentContext::ExternInfo> Validator::defineExport(
     std::string_view Name, const ComponentContext::ExternInfo &Inferred,
-    const std::optional<AST::Component::ExternDesc> &Ascribed) noexcept {
+    const std::optional<AST::Component::ExternDesc> &Ascribed,
+    Span<const std::string> Impls) noexcept {
   EXPECTED_TRY(ComponentName CN, parseExportName(Name));
+  EXPECTED_TRY(checkImplements(
+      CN, Impls, Inferred.K == ComponentContext::ExternInfo::Kind::Instance));
   const auto Rec = ComponentContext::makeNameRecord(CN);
   const auto Clash =
       ComponentContext::addUniqueName(CompCtx.top().ExportNames, Rec);
@@ -895,10 +944,9 @@ Expect<ComponentContext::ExternInfo> Validator::defineExport(
     }
     Result = Asc;
   }
-  // Exporting a resource re-introduces it under a fresh naming identity;
-  // the resource identity itself is preserved for matching.
-  if (Result.K == ComponentContext::ExternInfo::Kind::Type &&
-      Result.Type.ResourceId.has_value()) {
+  // Exporting a type re-introduces it under a fresh naming identity; the
+  // underlying (resource or structural) identity is preserved for matching.
+  if (Result.K == ComponentContext::ExternInfo::Kind::Type) {
     Result.Type.NameId = CompCtx.newNameId();
   }
   if (Result.K == ComponentContext::ExternInfo::Kind::Instance) {
@@ -1111,10 +1159,20 @@ bool Validator::namedTypeEntry(const ComponentContext::TypeEntry &E,
   if (D.isPrimValType()) {
     return true;
   }
-  // Never-anonymous shapes must be in the named set themselves. Type
-  // substitution at instantiation preserves structure, so a structurally
-  // equal named type also satisfies the rule.
+  // Never-anonymous shapes must be in the named set themselves. Local
+  // references must name the introduced identity: a definition is not
+  // "named" by merely being the target of an introduced import/export.
+  // Foreign entries (from instantiated or declared shapes) allow a
+  // structurally equal named type, since instantiation-time substitution
+  // preserves structure.
   if (D.isFlagsTy() || D.isEnumTy() || D.isRecordTy() || D.isVariantTy()) {
+    const auto &NamedIds = IsImport ? S.ImportNamedIds : S.ExportNamedIds;
+    if (E.Home == &S) {
+      return E.NameId.has_value() && NamedIds.count(*E.NameId) != 0;
+    }
+    if (E.NameId.has_value() && NamedIds.count(*E.NameId) != 0) {
+      return true;
+    }
     if (NamedTys.count(E.DT) != 0) {
       return true;
     }
@@ -1284,7 +1342,7 @@ bool Validator::namedExtern(const ComponentContext::ExternInfo &Info,
       return false;
     }
     // Introduce: imported types are usable by exports as well.
-    if (Info.Type.NameId.has_value()) {
+    if (Info.Type.ResourceId.has_value() && Info.Type.NameId.has_value()) {
       if (IsImport) {
         S.ImportNamedResources.insert(*Info.Type.NameId);
         S.ExportNamedResources.insert(*Info.Type.NameId);
@@ -1295,8 +1353,15 @@ bool Validator::namedExtern(const ComponentContext::ExternInfo &Info,
       if (IsImport) {
         S.ImportNamedTypes.emplace(Info.Type.DT, Info.Type.Home);
         S.ExportNamedTypes.emplace(Info.Type.DT, Info.Type.Home);
+        if (Info.Type.NameId.has_value()) {
+          S.ImportNamedIds.insert(*Info.Type.NameId);
+          S.ExportNamedIds.insert(*Info.Type.NameId);
+        }
       } else {
         S.ExportNamedTypes.emplace(Info.Type.DT, Info.Type.Home);
+        if (Info.Type.NameId.has_value()) {
+          S.ExportNamedIds.insert(*Info.Type.NameId);
+        }
       }
     }
     return true;

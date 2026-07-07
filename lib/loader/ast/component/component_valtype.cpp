@@ -7,15 +7,36 @@ namespace WasmEdge {
 namespace Loader {
 
 Expect<void> Loader::loadExternName(std::string &Name) {
+  std::vector<std::string> Ignored;
+  return loadExternName(Name, Ignored);
+}
+
+Expect<void> Loader::loadExternName(std::string &Name,
+                                    std::vector<std::string> &Implements) {
   // importname' ::= 0x00 len:<u32> in:<importname> => in (if len = |in|)
-  // exportname' ::= 0x00 len:<u32> en:<exportname> => en (if len = |en|)
+  //               | 0x02 len:<u32> in:<importname> opts:vec(<nameopt>)
+  // nameopt     ::= 0x00 len:<u32> n:<interfacename> => (implements n)
+  //               | 0x01 len:<u32> vs:<semversuffix> => (versionsuffix vs)
 
   // Error messages will be handled in the parent scope.
   EXPECTED_TRY(auto B, FMgr.readByte());
-  if (B != 0x00) {
+  if (B != 0x00 && B != 0x02) {
     return Unexpect(ErrCode::Value::MalformedName);
   }
   EXPECTED_TRY(Name, FMgr.readName());
+  if (B == 0x02) {
+    EXPECTED_TRY(auto Cnt, FMgr.readU32());
+    for (uint32_t I = 0; I < Cnt; ++I) {
+      EXPECTED_TRY(auto Opt, FMgr.readByte());
+      if (Opt == 0x00) {
+        EXPECTED_TRY(auto Impl, FMgr.readName());
+        Implements.push_back(std::move(Impl));
+      } else {
+        // versionsuffix is not implemented.
+        return Unexpect(ErrCode::Value::MalformedName);
+      }
+    }
+  }
   return {};
 }
 

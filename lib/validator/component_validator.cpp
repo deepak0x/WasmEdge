@@ -385,6 +385,9 @@ Validator::validate(const AST::Component::Instance &Inst) noexcept {
       return Unexpect(ErrCode::Value::ComponentExportNameConflict);
     }
     EXPECTED_TRY(checkAnnotatedName(CN, Info, false));
+    EXPECTED_TRY(checkImplements(
+        CN, Exp.getImplements(),
+        Info.K == ComponentContext::ExternInfo::Kind::Instance));
     if (!Exp.getSortIdx().getSort().isCore() &&
         Exp.getSortIdx().getSort().getSortType() ==
             AST::Component::Sort::SortType::Value) {
@@ -766,7 +769,8 @@ Validator::validate(const AST::Component::ImportSection &ImpSec) noexcept {
 }
 
 Expect<void> Validator::validate(const AST::Component::Import &Im) noexcept {
-  EXPECTED_TRY(auto Info, defineImport(Im.getName(), Im.getDesc()));
+  EXPECTED_TRY(auto Info,
+               defineImport(Im.getName(), Im.getDesc(), Im.getImplements()));
   auto &S = CompCtx.top();
   if (S.SelfInfo != nullptr) {
     S.SelfInfo->Imports.emplace_back(std::string(Im.getName()), Info);
@@ -852,7 +856,8 @@ Expect<void> Validator::validate(const AST::Component::Export &Ex) noexcept {
       return Unexpect(ErrCode::Value::InvalidTypeReference);
     }
   }
-  EXPECTED_TRY(auto Result, defineExport(Ex.getName(), Inferred, Ex.getDesc()));
+  EXPECTED_TRY(auto Result, defineExport(Ex.getName(), Inferred, Ex.getDesc(),
+                                         Ex.getImplements()));
   // The re-exported value index is born consumed.
   if (Result.K == CtxView::ExternInfo::Kind::Value) {
     CompCtx.top().Values.back().Consumed = true;

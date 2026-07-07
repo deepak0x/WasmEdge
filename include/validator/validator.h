@@ -141,15 +141,21 @@ private:
   void defineExtern(const CtxView::ExternInfo &Info) noexcept;
   // Validate an import's name and define the entity it introduces.
   Expect<CtxView::ExternInfo>
-  defineImport(std::string_view Name,
-               const AST::Component::ExternDesc &Desc) noexcept;
+  defineImport(std::string_view Name, const AST::Component::ExternDesc &Desc,
+               Span<const std::string> Impls = {}) noexcept;
   // Validate an export's name/uniqueness/annotations, apply the optional
   // ascription, and define the re-exported index.
-  Expect<CtxView::ExternInfo> defineExport(
-      std::string_view Name, const CtxView::ExternInfo &Inferred,
-      const std::optional<AST::Component::ExternDesc> &Ascribed) noexcept;
+  Expect<CtxView::ExternInfo>
+  defineExport(std::string_view Name, const CtxView::ExternInfo &Inferred,
+               const std::optional<AST::Component::ExternDesc> &Ascribed,
+               Span<const std::string> Impls = {}) noexcept;
   // Import/export name grammar + position checks.
   Expect<ComponentName> parseImportName(std::string_view Name) noexcept;
+  // The `implements` annotation: values must be interface names, the
+  // annotated name must be plain, and the extern must be instance-typed.
+  Expect<void> checkImplements(const ComponentName &CN,
+                               Span<const std::string> Impls,
+                               bool IsInstance) noexcept;
   Expect<ComponentName> parseExportName(std::string_view Name) noexcept;
   // Type declaration bodies -> materialized views.
   Expect<const CtxView::CoreModuleInfo *>

@@ -1284,6 +1284,11 @@ E(ComponentInstanceNotValidImport, 0x027F,
   "instance not valid to be used as import")
 E(ComponentTypeSizeLimit, 0x027E, "effective type size exceeds the limit")
 E(ComponentTypeNestingDepth, 0x0275, "type nesting is too deep")
+E(ComponentImplementsInterface, 0x0270, "must be an interface")
+E(ComponentImplementsName, 0x0271, "`implements` name is not a valid name")
+E(ComponentImplementsInstance, 0x0272,
+  "only instance names can have an `implements`")
+E(ComponentImplementsPlain, 0x0273, "is not valid with `implements`")
 // Empty composite type diagnostics
 E(RecordMustHaveField, 0x027A, "record type must have at least one field")
 E(EnumMustHaveVariant, 0x027B, "enum type must have at least one variant")

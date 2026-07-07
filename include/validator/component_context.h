@@ -277,6 +277,10 @@ public:
         ImportNamedTypes;
     std::unordered_map<const AST::Component::DefType *, const Scope *>
         ExportNamedTypes;
+    // Naming identities of introduced types: local references must name the
+    // introduced identity, not merely a structurally identical definition.
+    std::unordered_set<uint32_t> ImportNamedIds;
+    std::unordered_set<uint32_t> ExportNamedIds;
 
     uint32_t getSortSize(AST::Component::Sort::SortType ST) const noexcept;
     uint32_t
