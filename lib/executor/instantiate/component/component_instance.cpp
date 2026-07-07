@@ -160,13 +160,12 @@ Executor::instantiate(Runtime::Instance::ComponentInstance &CompInst,
                                  CompInst.getType(SortIdx.getIdx()),
                                  CompInst.getTypeResource(SortIdx.getIdx()));
             break;
-          case AST::Component::Sort::SortType::Component: {
-            const auto *C = CompInst.getComponent(SortIdx.getIdx());
-            if (C != nullptr) {
-              ImportMgr.exportComponent(Arg.getName(), C);
-            }
+          case AST::Component::Sort::SortType::Component:
+            ImportMgr.exportComponent(
+                Arg.getName(), CompInst.getComponent(SortIdx.getIdx()),
+                CompInst.getComponentShape(SortIdx.getIdx()),
+                CompInst.getComponentEnv(SortIdx.getIdx()));
             break;
-          }
           case AST::Component::Sort::SortType::Value:
             // TODO: COMPONENT - value arguments.
             spdlog::error(ErrCode::Value::ComponentNotImplInstantiate);
@@ -181,14 +180,25 @@ Executor::instantiate(Runtime::Instance::ComponentInstance &CompInst,
       const AST::Component::Component *CompPtr =
           CompInst.getComponent(Expr.getComponentIndex());
       if (CompPtr == nullptr) {
+        // Host components carry only their declared shape.
+        if (const auto *Shape =
+                CompInst.getComponentShape(Expr.getComponentIndex())) {
+          EXPECTED_TRY(auto StubInst,
+                       instantiateHostComponent(CompInst, *Shape));
+          CompInst.addComponentInstance(std::move(StubInst));
+          continue;
+        }
         spdlog::error(ErrCode::Value::ComponentNotImplInstantiate);
         spdlog::error("    component {} not found"sv, Expr.getComponentIndex());
         return Unexpect(ErrCode::Value::ComponentNotImplInstantiate);
       }
       const AST::Component::Component &Comp = *CompPtr;
-      EXPECTED_TRY(auto NewCompInst, instantiate(ImportMgr, Comp));
-      // Wire the lexical parent for outer-alias resolution.
-      NewCompInst->setParent(&CompInst);
+      // The lexical parent is the component value's captured definition
+      // environment, not the instantiation site.
+      const auto *Env = CompInst.getComponentEnv(Expr.getComponentIndex());
+      EXPECTED_TRY(
+          auto NewCompInst,
+          instantiate(ImportMgr, Comp, Env != nullptr ? Env : &CompInst));
       CompInst.addComponentInstance(std::move(NewCompInst));
     } else {
       // Inline exports case.
@@ -258,9 +268,9 @@ Executor::instantiate(Runtime::Instance::ComponentInstance &CompInst,
             ExpIdx[2]++;
             break;
           case AST::Component::Sort::SortType::Component:
-            if (const auto *C = CompInst.getComponent(Idx)) {
-              Comp->addComponent(*C);
-            }
+            Comp->addComponentEntry(CompInst.getComponent(Idx),
+                                    CompInst.getComponentShape(Idx),
+                                    CompInst.getComponentEnv(Idx));
             break;
           case AST::Component::Sort::SortType::Value:
             // TODO: COMPONENT - value inline exports.

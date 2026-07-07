@@ -173,16 +173,17 @@ Executor::instantiate(Runtime::Instance::ComponentInstance &CompInst,
           CompInst.addTypeWithResource(Target->getType(Outer.second),
                                        Target->getTypeResource(Outer.second));
           break;
-        case AST::Component::Sort::SortType::Component: {
-          const auto *Comp = Target->getComponent(Outer.second);
-          if (Comp == nullptr) {
+        case AST::Component::Sort::SortType::Component:
+          if (Target->getComponent(Outer.second) == nullptr &&
+              Target->getComponentShape(Outer.second) == nullptr) {
             spdlog::error(ErrCode::Value::ComponentNotImplInstantiate);
             spdlog::error("    outer component {} not found"sv, Outer.second);
             return Unexpect(ErrCode::Value::ComponentNotImplInstantiate);
           }
-          CompInst.addComponent(*Comp);
+          CompInst.addComponentEntry(Target->getComponent(Outer.second),
+                                     Target->getComponentShape(Outer.second),
+                                     Target->getComponentEnv(Outer.second));
           break;
-        }
         default:
           // Validation only admits type / component outer aliases.
           spdlog::error(ErrCode::Value::ComponentNotImplInstantiate);

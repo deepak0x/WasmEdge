@@ -88,10 +88,12 @@ public:
     NamedType.emplace(std::string(Name), std::make_pair(Ty, ResourceRT));
   }
 
-  // Export a named component (definition) to this import manager.
+  // Export a named component (definition or host shape) to this manager.
   void exportComponent(std::string_view Name,
-                       const AST::Component::Component *C) noexcept {
-    NamedComp.emplace(Name, C);
+                       const AST::Component::Component *C,
+                       const AST::Component::ComponentType *Shape,
+                       const ComponentInstance *Env) noexcept {
+    NamedComp.emplace(std::string(Name), std::make_tuple(C, Shape, Env));
   }
 
   // Export a named core module (definition) to this import manager.
@@ -116,10 +118,24 @@ public:
     return It != NamedType.end() ? It->second.second : nullptr;
   }
 
-  // Find a named component definition.
+  // Find a named component definition (AST) or its host shape.
   const AST::Component::Component *
   findComponent(std::string_view Name) const noexcept {
-    return findExport(NamedComp, Name);
+    auto It = NamedComp.find(std::string(Name));
+    return It != NamedComp.end() ? std::get<0>(It->second) : nullptr;
+  }
+  const AST::Component::ComponentType *
+  findComponentShape(std::string_view Name) const noexcept {
+    auto It = NamedComp.find(std::string(Name));
+    return It != NamedComp.end() ? std::get<1>(It->second) : nullptr;
+  }
+  const ComponentInstance *
+  findComponentEnv(std::string_view Name) const noexcept {
+    auto It = NamedComp.find(std::string(Name));
+    return It != NamedComp.end() ? std::get<2>(It->second) : nullptr;
+  }
+  bool hasComponent(std::string_view Name) const noexcept {
+    return NamedComp.count(std::string(Name)) != 0;
   }
 
   // Find a named core module definition.
@@ -193,7 +209,9 @@ private:
            std::pair<const AST::Component::DefType *, const void *>>
       NamedType;
   std::map<std::string, const ComponentInstance *, std::less<>> NamedCompInst;
-  std::map<std::string, const AST::Component::Component *, std::less<>>
+  std::map<std::string, std::tuple<const AST::Component::Component *,
+                                   const AST::Component::ComponentType *,
+                                   const ComponentInstance *>>
       NamedComp;
   std::map<std::string, const AST::Module *, std::less<>> NamedCoreMod;
   std::map<std::string, FunctionInstance *, std::less<>> NamedCoreFunc;
@@ -400,6 +418,9 @@ public:
   const ComponentInstance *getComponentInstance(uint32_t Index) const noexcept {
     return Index < CompInsts.size() ? CompInsts[Index] : nullptr;
   }
+  uint32_t getComponentInstanceCount() const noexcept {
+    return static_cast<uint32_t>(CompInsts.size());
+  }
   void exportComponentInstance(std::string_view Name, uint32_t Idx) noexcept {
     if (Idx < CompInsts.size()) {
       ExpCompInsts.insert_or_assign(std::string(Name), CompInsts[Idx]);
@@ -416,10 +437,29 @@ public:
   const ComponentInstance *getParent() const noexcept { return Parent; }
 
   void addComponent(const AST::Component::Component &C) noexcept {
-    Comps.emplace_back(&C);
+    // A component value closes over its lexical environment: outer aliases
+    // inside it resolve against the defining instance, wherever it is
+    // eventually instantiated.
+    Comps.push_back({&C, nullptr, this});
+  }
+  // A host-synthesized component backed only by its declared shape.
+  void addHostComponent(const AST::Component::ComponentType &Shape) noexcept {
+    Comps.push_back({nullptr, &Shape, this});
+  }
+  void addComponentEntry(const AST::Component::Component *C,
+                         const AST::Component::ComponentType *Shape,
+                         const ComponentInstance *Env) noexcept {
+    Comps.push_back({C, Shape, Env});
+  }
+  const ComponentInstance *getComponentEnv(uint32_t Index) const noexcept {
+    return Index < Comps.size() ? Comps[Index].Env : nullptr;
   }
   const AST::Component::Component *getComponent(uint32_t Index) const noexcept {
-    return Index < Comps.size() ? Comps[Index] : nullptr;
+    return Index < Comps.size() ? Comps[Index].Ast : nullptr;
+  }
+  const AST::Component::ComponentType *
+  getComponentShape(uint32_t Index) const noexcept {
+    return Index < Comps.size() ? Comps[Index].Shape : nullptr;
   }
 
   // Index space: core function.
@@ -578,7 +618,12 @@ private:
   // TODO: values
   std::vector<const AST::Component::DefType *> Types;
   std::vector<const ComponentInstance *> CompInsts;
-  std::vector<const AST::Component::Component *> Comps;
+  struct CompEntry {
+    const AST::Component::Component *Ast;
+    const AST::Component::ComponentType *Shape;
+    const ComponentInstance *Env;
+  };
+  std::vector<CompEntry> Comps;
   std::vector<FunctionInstance *> CoreFuncInsts;
   std::vector<TableInstance *> CoreTabInsts;
   std::vector<MemoryInstance *> CoreMemInsts;

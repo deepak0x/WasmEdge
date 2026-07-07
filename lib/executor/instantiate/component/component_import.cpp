@@ -29,13 +29,23 @@ Executor::instantiate(Runtime::StoreManager &StoreMgr,
             CompInst.getTypeResource(Desc.getTypeIndex()));
         break;
       }
+      if (Conf.getRuntimeConfigure().isComponentPermissiveImports()) {
+        // A fresh opaque host resource type stands in for the abstract
+        // import so handle operations stay usable.
+        CompInst.addHostResourceType(nullptr);
+        break;
+      }
       CompInst.addDummyType();
       break;
     case AST::Component::ExternDesc::DescType::CoreType:
     case AST::Component::ExternDesc::DescType::FuncType:
     case AST::Component::ExternDesc::DescType::ValueBound:
     case AST::Component::ExternDesc::DescType::ComponentType:
-      // No host-side providers for these sorts yet.
+      if (Conf.getRuntimeConfigure().isComponentPermissiveImports()) {
+        EXPECTED_TRY(synthesizeImport(CompInst, Desc));
+        break;
+      }
+      // No host-side providers for these sorts.
       spdlog::error(ErrCode::Value::UnknownImport);
       spdlog::error("    import name: {}"sv, Import.getName());
       return Unexpect(ErrCode::Value::UnknownImport);
@@ -44,6 +54,10 @@ Executor::instantiate(Runtime::StoreManager &StoreMgr,
       auto CompName = Import.getName();
       const auto *ImportedCompInst = StoreMgr.findComponent(CompName);
       if (unlikely(ImportedCompInst == nullptr)) {
+        if (Conf.getRuntimeConfigure().isComponentPermissiveImports()) {
+          EXPECTED_TRY(synthesizeImport(CompInst, Desc));
+          break;
+        }
         spdlog::error(ErrCode::Value::UnknownImport);
         spdlog::error("    component name: {}"sv, CompName);
         return Unexpect(ErrCode::Value::UnknownImport);
@@ -68,6 +82,10 @@ Executor::instantiate(Runtime::Instance::ComponentImportManager &ImportMgr,
     case AST::Component::ExternDesc::DescType::FuncType: {
       auto *Func = ImportMgr.findFunction(Import.getName());
       if (unlikely(Func == nullptr)) {
+        if (Conf.getRuntimeConfigure().isComponentPermissiveImports()) {
+          EXPECTED_TRY(synthesizeImport(CompInst, Desc));
+          break;
+        }
         spdlog::error(ErrCode::Value::UnknownImport);
         spdlog::error("    function name: {}"sv, Import.getName());
         return Unexpect(ErrCode::Value::UnknownImport);
@@ -92,14 +110,20 @@ Executor::instantiate(Runtime::Instance::ComponentImportManager &ImportMgr,
       break;
     }
     case AST::Component::ExternDesc::DescType::ComponentType: {
-      const auto *C = ImportMgr.findComponent(Import.getName());
-      if (unlikely(C == nullptr)) {
-        spdlog::error(ErrCode::Value::UnknownImport);
-        spdlog::error("    component name: {}"sv, Import.getName());
-        return Unexpect(ErrCode::Value::UnknownImport);
+      if (ImportMgr.hasComponent(Import.getName())) {
+        CompInst.addComponentEntry(
+            ImportMgr.findComponent(Import.getName()),
+            ImportMgr.findComponentShape(Import.getName()),
+            ImportMgr.findComponentEnv(Import.getName()));
+        break;
       }
-      CompInst.addComponent(*C);
-      break;
+      if (Conf.getRuntimeConfigure().isComponentPermissiveImports()) {
+        EXPECTED_TRY(synthesizeImport(CompInst, Desc));
+        break;
+      }
+      spdlog::error(ErrCode::Value::UnknownImport);
+      spdlog::error("    component name: {}"sv, Import.getName());
+      return Unexpect(ErrCode::Value::UnknownImport);
     }
     case AST::Component::ExternDesc::DescType::CoreType: {
       const auto *M = ImportMgr.findCoreModule(Import.getName());
@@ -121,6 +145,10 @@ Executor::instantiate(Runtime::Instance::ComponentImportManager &ImportMgr,
       auto CompName = Import.getName();
       const auto *ImportedCompInst = ImportMgr.findComponentInstance(CompName);
       if (unlikely(ImportedCompInst == nullptr)) {
+        if (Conf.getRuntimeConfigure().isComponentPermissiveImports()) {
+          EXPECTED_TRY(synthesizeImport(CompInst, Desc));
+          break;
+        }
         spdlog::error(ErrCode::Value::UnknownImport);
         spdlog::error("    component name: {}"sv, CompName);
         return Unexpect(ErrCode::Value::UnknownImport);

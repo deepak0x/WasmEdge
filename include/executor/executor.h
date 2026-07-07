@@ -176,6 +176,18 @@ public:
                               const Runtime::Instance::ModuleInstance &ModInst,
                               std::string_view Name);
 
+  /// Synthesize a missing root import (permissive-imports mode).
+  Expect<void> synthesizeImport(Runtime::Instance::ComponentInstance &CompInst,
+                                const AST::Component::ExternDesc &Desc);
+  /// Build a stub instance mirroring the declared shape.
+  Expect<std::unique_ptr<Runtime::Instance::ComponentInstance>>
+  synthesizeInstanceStub(Runtime::Instance::ComponentInstance &Owner,
+                         Span<const AST::Component::InstanceDecl *const> Decls);
+  /// Instantiate a host component from its declared shape.
+  Expect<std::unique_ptr<Runtime::Instance::ComponentInstance>>
+  instantiateHostComponent(Runtime::Instance::ComponentInstance &Owner,
+                           const AST::Component::ComponentType &Shape);
+
   /// Instantiate a Component as an anonymous component instance.
   Expect<std::unique_ptr<Runtime::Instance::ComponentInstance>>
   instantiateComponent(Runtime::StoreManager &StoreMgr,
@@ -317,7 +329,8 @@ private:
   /// Instantiation of Child Component Instance.
   Expect<std::unique_ptr<Runtime::Instance::ComponentInstance>>
   instantiate(Runtime::Instance::ComponentImportManager &ImportMgr,
-              const AST::Component::Component &Comp);
+              const AST::Component::Component &Comp,
+              const Runtime::Instance::ComponentInstance *Parent = nullptr);
 
   /// Instantiation of Child Core Module Instance.
   Expect<std::unique_ptr<Runtime::Instance::ModuleInstance>>

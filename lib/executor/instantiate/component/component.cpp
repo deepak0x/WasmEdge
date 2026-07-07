@@ -55,8 +55,12 @@ Executor::instantiate(Runtime::StoreManager &StoreMgr,
 // Instantiate component module instance. See "include/executor/Executor.h".
 Expect<std::unique_ptr<Runtime::Instance::ComponentInstance>>
 Executor::instantiate(Runtime::Instance::ComponentImportManager &ImportMgr,
-                      const AST::Component::Component &Comp) {
+                      const AST::Component::Component &Comp,
+                      const Runtime::Instance::ComponentInstance *Parent) {
   auto CompInst = std::make_unique<Runtime::Instance::ComponentInstance>("");
+  // The lexical parent must be wired before sections run: outer aliases
+  // resolve through it during instantiation.
+  CompInst->setParent(Parent);
 
   for (const auto &Section : Comp.getSections()) {
     auto Func = [&](auto &&Sec) -> Expect<void> {

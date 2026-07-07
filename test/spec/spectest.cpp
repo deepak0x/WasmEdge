@@ -34,9 +34,7 @@
 #include <unordered_map>
 #include <variant>
 
-namespace WasmEdge {
-thread_local bool SpecTest::SkipComponentValidation = false;
-}
+namespace WasmEdge {}
 
 namespace {
 
@@ -251,8 +249,14 @@ struct TestsuiteProposal {
       const WasmEdge::Standard Std = WasmEdge::Standard::WASM_3,
       const std::vector<WasmEdge::Proposal> &EnableProps = {},
       const std::vector<WasmEdge::Proposal> &DisableProps = {},
-      WasmEdge::SpecTest::TestMode M = WasmEdge::SpecTest::TestMode::All)
+      WasmEdge::SpecTest::TestMode M = WasmEdge::SpecTest::TestMode::All,
+      bool PermissiveImports = false)
       : Path(P), Mode(M) {
+    if (PermissiveImports) {
+      // Spec-test module commands instantiate components whose imports have
+      // no host provider; synthesize stubs for them.
+      Conf.getRuntimeConfigure().setComponentPermissiveImports(true);
+    }
     Conf.setWASMStandard(Std);
     for (const auto &Prop : EnableProps) {
       Conf.addProposal(Prop);
@@ -296,79 +300,9 @@ static const TestsuiteProposal TestsuiteProposals[] = {
      WasmEdge::Standard::WASM_3,
      {Proposal::Component, Proposal::Threads},
      {},
-     WasmEdge::SpecTest::TestMode::Interpreter},
+     WasmEdge::SpecTest::TestMode::Interpreter,
+     /*PermissiveImports=*/true},
 };
-
-// Labels the component model support status of each test folder.
-// Will be deleted when component model is fully supported.
-struct ComponentModelSupport {
-  bool Load;
-  bool Validate;
-  bool Instantiate;
-  bool Execute;
-};
-
-// clang-format off
-// Labels the component model support status of each test folder.
-// Will be deleted when component model is fully supported.
-std::map<std::string, ComponentModelSupport> ComponentModelFolders = {
-    // | Folder | Test table: {load, validate, instantiate, execute} |
-    // ---------------------------------------------------------------
-    // Folder: the directory name of tests.
-    // Test table: the testing status of load, validate, instantiate, and execute.
-    {"adapt",                   {true, true,  true,  true}},
-    {"alias",                   {true, true,  true,  true}},
-    {"big",                     {true, true,  true,  true}},
-    {"definedtypes",            {true, true,  true,  true}},
-    {"empty",                   {true, true,  true,  true}},
-    {"example",                 {true, true,  true,  true}},
-    {"export",                  {true, true,  true,  true}},
-    {"export-ascription",       {true, true,  true,  true}},
-    {"export-introduces-alias", {true, true,  true,  true}},
-    {"func",                    {true, true,  true,  true}},
-    {"import",                  {true, true,  true,  true}},
-    {"imports-exports",         {true, true,  true,  true}},
-    {"inline-exports",          {true, true,  true,  true}},
-    {"instance-types",          {true, true,  true,  true}},
-    {"instantiate",             {true, true,  true,  true}},
-    {"invalid",                 {true, true,  true,  true}},
-    {"link",                    {true, true,  true,  true}},
-    {"lots-of-aliases",         {true, true,  true,  true}},
-    {"lower",                   {true, true,  true,  true}},
-    {"memory64",                {true, true,  false, false}},
-    {"module-link",             {true, true,  false, false}},
-    {"more-flags",              {true, true,  true,  true}},
-    {"naming",                  {true, true,  false, false}},
-    {"nested-modules",          {true, true,  true,  true}},
-    {"resources",               {true, true,  false, false}},
-    {"tags",                    {true, true,  true,  true}},
-    {"type-export-restrictions",{true, true,  false, false}},
-    {"types",                   {true, true,  true,  true}},
-    {"very-nested",             {true, true,  true,  true}},
-    {"virtualize",              {true, true,  true,  true}},
-};
-// clang-format on
-
-// Gets the component model support status of each test folder.
-// Will be deleted when component model is fully supported.
-bool checkComponentSupported(std::string_view Folder, WasmEdge::WasmPhase P) {
-  auto It = ComponentModelFolders.find(std::string(Folder));
-  if (It == ComponentModelFolders.end()) {
-    return false;
-  }
-  switch (P) {
-  case WasmEdge::WasmPhase::Loading:
-    return It->second.Load;
-  case WasmEdge::WasmPhase::Validation:
-    return It->second.Validate;
-  case WasmEdge::WasmPhase::Instantiation:
-    return It->second.Instantiate;
-  case WasmEdge::WasmPhase::Execution:
-    return It->second.Execute;
-  default:
-    return false;
-  }
-}
 
 } // namespace
 
@@ -848,9 +782,6 @@ void SpecTest::processCommands(ContextHandle Ctx, std::string_view Proposal,
 
   // Helper function to check trap on loading.
   auto TrapLoad = [&](const std::string &FileName, const std::string &Text) {
-    if (IsComponent && !checkComponentSupported(UnitName, WasmPhase::Loading)) {
-      return;
-    }
     if (auto Res = onLoad(Ctx, FileName)) {
       EXPECT_TRUE(false);
     } else {
@@ -864,10 +795,6 @@ void SpecTest::processCommands(ContextHandle Ctx, std::string_view Proposal,
   // Helper function to check trap on validation.
   auto TrapValidate = [&](const std::string &FileName,
                           const std::string &Text) {
-    if (IsComponent &&
-        !checkComponentSupported(UnitName, WasmPhase::Validation)) {
-      return;
-    }
     if (auto Res = onValidate(Ctx, FileName); Res) {
       EXPECT_TRUE(false);
     } else {
@@ -881,10 +808,6 @@ void SpecTest::processCommands(ContextHandle Ctx, std::string_view Proposal,
   // Helper function to check trap on instantiation.
   auto TrapInstantiate = [&](const std::string &FileName,
                              const std::string &Text) {
-    if (IsComponent &&
-        !checkComponentSupported(UnitName, WasmPhase::Instantiation)) {
-      return;
-    }
     if (auto Res = onInstantiate(Ctx, FileName); Res) {
       EXPECT_TRUE(false);
     } else {
@@ -899,11 +822,6 @@ void SpecTest::processCommands(ContextHandle Ctx, std::string_view Proposal,
   // Helper function to check trap on invocation.
   auto TrapInvoke = [&](const simdjson::dom::object &Action,
                         const std::string &Text, uint64_t LineNumber) {
-    if (IsComponent &&
-        !checkComponentSupported(UnitName, WasmPhase::Execution)) {
-      // TODO: Component model invocation not yet supported.
-      return;
-    }
     const auto ModName = GetModuleName(Action);
     const std::string_view Field = Action["field"];
     simdjson::dom::array Args = Action["args"];
@@ -962,26 +880,6 @@ void SpecTest::processCommands(ContextHandle Ctx, std::string_view Proposal,
         const auto FilePath =
             (TestsuiteRoot / Proposal / UnitName / FileName).u8string();
         const uint64_t LineNumber = Cmd["line"];
-        // Reset the flag for each module command to avoid stale state
-        // from prior test entries.
-        SkipComponentValidation = false;
-        if (IsComponent) {
-          if (!checkComponentSupported(UnitName, WasmPhase::Instantiation)) {
-            if (checkComponentSupported(UnitName, WasmPhase::Validation)) {
-              if (!onValidate(Ctx, FilePath)) {
-                EXPECT_NE(LineNumber, LineNumber);
-              }
-            } else if (checkComponentSupported(UnitName, WasmPhase::Loading)) {
-              if (!onLoad(Ctx, FilePath)) {
-                EXPECT_NE(LineNumber, LineNumber);
-              }
-            }
-            return;
-          }
-          if (!checkComponentSupported(UnitName, WasmPhase::Validation)) {
-            SkipComponentValidation = true;
-          }
-        }
         std::string LineStr = std::to_string(LineNumber);
         std::string_view TempName;
         if (!Cmd["name"].get(TempName)) {
@@ -1010,14 +908,6 @@ void SpecTest::processCommands(ContextHandle Ctx, std::string_view Proposal,
         const auto FilePath =
             (TestsuiteRoot / Proposal / UnitName / FileName).u8string();
         const uint64_t LineNumber = Cmd["line"];
-        if (IsComponent &&
-            !checkComponentSupported(UnitName, WasmPhase::Loading)) {
-          // Skip loading for unsupported component model tests.
-          return;
-        }
-        SkipComponentValidation =
-            IsComponent &&
-            !checkComponentSupported(UnitName, WasmPhase::Validation);
         if (auto Res = onModuleDefine(Ctx, std::string(FilePath)); Res) {
           if (!Cmd["name"].get(ASTName)) {
             ASTMap.emplace(std::string(ASTName), std::move(*Res));
