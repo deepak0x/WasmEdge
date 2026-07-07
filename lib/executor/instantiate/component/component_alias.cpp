@@ -71,8 +71,21 @@ Executor::instantiate(Runtime::Instance::ComponentInstance &CompInst,
         CompInst.addComponentInstance(Nested);
         break;
       }
+      case AST::Component::Sort::SortType::Component: {
+        const auto *CInst = CompInst.getComponentInstance(Export.first);
+        const auto *Entry = CInst != nullptr
+                                ? CInst->findComponentEntry(Export.second)
+                                : nullptr;
+        if (Entry == nullptr) {
+          spdlog::error(ErrCode::Value::ComponentNotImplInstantiate);
+          spdlog::error("    alias export component '{}' not found"sv,
+                        Export.second);
+          return Unexpect(ErrCode::Value::ComponentNotImplInstantiate);
+        }
+        CompInst.addComponentEntry(Entry->Ast, Entry->Shape, Entry->Env);
+        break;
+      }
       case AST::Component::Sort::SortType::Value:
-      case AST::Component::Sort::SortType::Component:
         // TODO: COMPONENT - complete the alias instantiation.
         spdlog::error(ErrCode::Value::ComponentNotImplInstantiate);
         spdlog::error("    incomplete alias export"sv);

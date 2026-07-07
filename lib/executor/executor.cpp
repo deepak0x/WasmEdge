@@ -240,6 +240,26 @@ Executor::invoke(const Runtime::Instance::Component::FunctionInstance *FuncInst,
     return FuncInst->getHostFunc()(Params);
   }
 
+  // Reentrance guard (component model forbids sync reentrance; this also
+  // rejects calls into an instance that is still being instantiated).
+  const auto *Parent = FuncInst->getComponentInstance();
+  if (Parent != nullptr && Parent->isEntered()) {
+    spdlog::error(ErrCode::Value::ComponentCannotEnter);
+    spdlog::error("    cannot enter component instance"sv);
+    return Unexpect(ErrCode::Value::ComponentCannotEnter);
+  }
+  struct EnterGuard {
+    const Runtime::Instance::ComponentInstance *P;
+    ~EnterGuard() {
+      if (P != nullptr) {
+        P->setEntered(false);
+      }
+    }
+  } Guard{Parent};
+  if (Parent != nullptr) {
+    Parent->setEntered(true);
+  }
+
   // Convert the component params into core WASM params.
   auto *ReallocFuncInst = FuncInst->getAllocFunction();
   auto *MemInst = FuncInst->getMemoryInstance();

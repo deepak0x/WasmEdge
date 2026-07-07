@@ -203,9 +203,13 @@ private:
   // Effective type-size limit (prevents exponential type blowup).
   static inline constexpr const uint64_t MaxTypeSize = 1000000;
   std::unordered_map<const void *, uint64_t> TypeSizeMemo;
+  std::unordered_map<const void *, uint64_t> TypeDepthMemo;
   uint64_t sizeOfValType(const CtxView::QualValType &Q) noexcept;
+  uint64_t depthOfValType(const CtxView::QualValType &Q) noexcept;
+  uint64_t depthOfExtern(const CtxView::ExternInfo &Info) noexcept;
   uint64_t sizeOfExtern(const CtxView::ExternInfo &Info) noexcept;
   Expect<void> checkTypeSize(uint64_t Size) noexcept;
+  Expect<void> checkTypeDepth(uint64_t Depth) noexcept;
 
   /// \name Structural matching (MVP: equality modulo resource identity).
   /// Substitution maps supertype-side abstract resource ids to subtype ids.

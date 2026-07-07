@@ -118,6 +118,156 @@ static void parseSIMDLanes(WasmEdge::uint128_t &V128,
   std::memcpy(&V128, &V, 16);
 }
 
+// Component-model value helpers: parse a json-from-wast ComponentConst into
+// a ComponentValVariant, and compare invoke results against expectations.
+namespace {
+
+uint32_t decodeFirstCodepoint(std::string_view S) {
+  if (S.empty()) {
+    return 0;
+  }
+  const auto B0 = static_cast<uint8_t>(S[0]);
+  if (B0 < 0x80) {
+    return B0;
+  }
+  if ((B0 & 0xE0U) == 0xC0U && S.size() >= 2) {
+    return ((B0 & 0x1FU) << 6) | (static_cast<uint8_t>(S[1]) & 0x3FU);
+  }
+  if ((B0 & 0xF0U) == 0xE0U && S.size() >= 3) {
+    return ((B0 & 0x0FU) << 12) | ((static_cast<uint8_t>(S[1]) & 0x3FU) << 6) |
+           (static_cast<uint8_t>(S[2]) & 0x3FU);
+  }
+  if ((B0 & 0xF8U) == 0xF0U && S.size() >= 4) {
+    return ((B0 & 0x07U) << 18) | ((static_cast<uint8_t>(S[1]) & 0x3FU) << 12) |
+           ((static_cast<uint8_t>(S[2]) & 0x3FU) << 6) |
+           (static_cast<uint8_t>(S[3]) & 0x3FU);
+  }
+  return B0;
+}
+
+// NOLINTNEXTLINE(misc-no-recursion)
+WasmEdge::ComponentValVariant
+parseComponentValue(const simdjson::dom::element &Elem) {
+  using namespace WasmEdge;
+  const std::string_view Type = Elem["type"];
+  auto Value = Elem["value"];
+  auto AsStr = [&]() {
+    std::string_view V = Value;
+    return std::string(V);
+  };
+  if (Type == "bool"sv) {
+    bool B = Value;
+    return ComponentValVariant{B};
+  }
+  if (Type == "string"sv) {
+    return ComponentValVariant{AsStr()};
+  }
+  if (Type == "char"sv) {
+    return ComponentValVariant{decodeFirstCodepoint(AsStr())};
+  }
+  if (Type == "u8"sv) {
+    return ComponentValVariant{uint8_t(std::stoul(AsStr()))};
+  }
+  if (Type == "s8"sv) {
+    return ComponentValVariant{int8_t(std::stol(AsStr()))};
+  }
+  if (Type == "u16"sv) {
+    return ComponentValVariant{uint16_t(std::stoul(AsStr()))};
+  }
+  if (Type == "s16"sv) {
+    return ComponentValVariant{int16_t(std::stol(AsStr()))};
+  }
+  if (Type == "u32"sv) {
+    return ComponentValVariant{uint32_t(std::stoul(AsStr()))};
+  }
+  if (Type == "s32"sv) {
+    return ComponentValVariant{int32_t(std::stol(AsStr()))};
+  }
+  if (Type == "u64"sv) {
+    return ComponentValVariant{uint64_t(std::stoull(AsStr()))};
+  }
+  if (Type == "s64"sv) {
+    return ComponentValVariant{int64_t(std::stoll(AsStr()))};
+  }
+  if (Type == "f32"sv) {
+    // The json carries the bit pattern.
+    uint32_t Bits = uint32_t(std::stoul(AsStr()));
+    float F;
+    std::memcpy(&F, &Bits, sizeof(F));
+    return ComponentValVariant{F};
+  }
+  if (Type == "f64"sv) {
+    uint64_t Bits = uint64_t(std::stoull(AsStr()));
+    double D;
+    std::memcpy(&D, &Bits, sizeof(D));
+    return ComponentValVariant{D};
+  }
+  if (Type == "list"sv || Type == "tuple"sv) {
+    simdjson::dom::array Arr = Value;
+    if (Type == "list"sv) {
+      WasmEdge::ListVal L;
+      for (auto E : Arr) {
+        L.Elements.push_back(parseComponentValue(E));
+      }
+      return makeComponentVal(std::move(L));
+    }
+    WasmEdge::TupleVal T;
+    for (auto E : Arr) {
+      T.Values.push_back(parseComponentValue(E));
+    }
+    return makeComponentVal(std::move(T));
+  }
+  // Unsupported kinds compare as never-equal placeholders.
+  return ComponentValVariant{std::string("<unsupported>")};
+}
+
+// NOLINTNEXTLINE(misc-no-recursion)
+bool equalComponentValue(const WasmEdge::ComponentValVariant &A,
+                         const WasmEdge::ComponentValVariant &B) {
+  using namespace WasmEdge;
+  if (A.index() != B.index()) {
+    return false;
+  }
+  if (std::holds_alternative<std::shared_ptr<ValComp>>(A)) {
+    const auto &CA = std::get<std::shared_ptr<ValComp>>(A);
+    const auto &CB = std::get<std::shared_ptr<ValComp>>(B);
+    if (!CA || !CB || CA->V.index() != CB->V.index()) {
+      return false;
+    }
+    if (std::holds_alternative<ListVal>(CA->V)) {
+      const auto &LA = std::get<ListVal>(CA->V);
+      const auto &LB = std::get<ListVal>(CB->V);
+      if (LA.Elements.size() != LB.Elements.size()) {
+        return false;
+      }
+      for (size_t I = 0; I < LA.Elements.size(); ++I) {
+        if (!equalComponentValue(LA.Elements[I], LB.Elements[I])) {
+          return false;
+        }
+      }
+      return true;
+    }
+    if (std::holds_alternative<TupleVal>(CA->V)) {
+      const auto &TA = std::get<TupleVal>(CA->V);
+      const auto &TB = std::get<TupleVal>(CB->V);
+      if (TA.Values.size() != TB.Values.size()) {
+        return false;
+      }
+      for (size_t I = 0; I < TA.Values.size(); ++I) {
+        if (!equalComponentValue(TA.Values[I], TB.Values[I])) {
+          return false;
+        }
+      }
+      return true;
+    }
+    // Other aggregates are not produced by the current test suites.
+    return false;
+  }
+  return A == B;
+}
+
+} // namespace
+
 // Helper function to parse parameters from JSON to a vector of values.
 std::pair<std::vector<WasmEdge::ValVariant>, std::vector<WasmEdge::ValType>>
 parseValueList(const simdjson::dom::array &Args) {
@@ -298,7 +448,7 @@ static const TestsuiteProposal TestsuiteProposals[] = {
     // Currently, the component model supports only interpreter mode.
     {"component-model"sv,
      WasmEdge::Standard::WASM_3,
-     {Proposal::Component, Proposal::Threads},
+     {Proposal::Component, Proposal::Threads, Proposal::ExceptionHandling},
      {},
      WasmEdge::SpecTest::TestMode::Interpreter,
      /*PermissiveImports=*/true},
@@ -710,7 +860,28 @@ void SpecTest::processCommands(ContextHandle Ctx, std::string_view Proposal,
   auto Invoke = [&](const simdjson::dom::object &Action,
                     const simdjson::dom::array &Expected, uint64_t LineNumber) {
     if (IsComponent) {
-      // TODO: Component model invocation not yet supported.
+      const auto CompModName = GetModuleName(Action);
+      const std::string_view CompField = Action["field"];
+      simdjson::dom::array CompArgs = Action["args"];
+      std::vector<WasmEdge::ComponentValVariant> CompParams;
+      for (auto A : CompArgs) {
+        CompParams.push_back(parseComponentValue(A));
+      }
+      if (auto Res = onCompInvoke(Ctx, CompModName, std::string(CompField),
+                                  CompParams)) {
+        if (Res->size() != Expected.size()) {
+          EXPECT_NE(LineNumber, LineNumber);
+          return;
+        }
+        size_t I = 0;
+        for (auto E : Expected) {
+          EXPECT_TRUE(
+              equalComponentValue(parseComponentValue(E), (*Res)[I].first));
+          ++I;
+        }
+      } else {
+        EXPECT_NE(LineNumber, LineNumber);
+      }
       return;
     }
     const auto ModName = GetModuleName(Action);
@@ -809,7 +980,7 @@ void SpecTest::processCommands(ContextHandle Ctx, std::string_view Proposal,
   auto TrapInstantiate = [&](const std::string &FileName,
                              const std::string &Text) {
     if (auto Res = onInstantiate(Ctx, FileName); Res) {
-      EXPECT_TRUE(false);
+      EXPECT_TRUE(false) << "expected instantiation failure: " << FileName;
     } else {
       EXPECT_TRUE(
           Res.error().getErrCodePhase() == WasmEdge::WasmPhase::Instantiation ||
@@ -822,6 +993,23 @@ void SpecTest::processCommands(ContextHandle Ctx, std::string_view Proposal,
   // Helper function to check trap on invocation.
   auto TrapInvoke = [&](const simdjson::dom::object &Action,
                         const std::string &Text, uint64_t LineNumber) {
+    if (IsComponent) {
+      const auto CompModName = GetModuleName(Action);
+      const std::string_view CompField = Action["field"];
+      simdjson::dom::array CompArgs = Action["args"];
+      std::vector<WasmEdge::ComponentValVariant> CompParams;
+      for (auto A : CompArgs) {
+        CompParams.push_back(parseComponentValue(A));
+      }
+      if (auto Res = onCompInvoke(Ctx, CompModName, std::string(CompField),
+                                  CompParams)) {
+        EXPECT_NE(LineNumber, LineNumber);
+      } else {
+        EXPECT_TRUE(
+            stringContains(Text, WasmEdge::ErrCodeStr[Res.error().getEnum()]));
+      }
+      return;
+    }
     const auto ModName = GetModuleName(Action);
     const std::string_view Field = Action["field"];
     simdjson::dom::array Args = Action["args"];
@@ -919,15 +1107,17 @@ void SpecTest::processCommands(ContextHandle Ctx, std::string_view Proposal,
         return;
       }
       case CommandID::ModuleInstance: {
-        std::string_view ModName = Cmd["name"];
-        std::string_view ASTName = Cmd["definition"];
-        const uint64_t LineNumber = Cmd["line"];
-        if (IsComponent) {
-          // The component model spec tests currently do not have
-          // module_instance commands. Fail explicitly if one is encountered.
-          EXPECT_NE(LineNumber, LineNumber);
-          return;
+        // Two json schemas exist: {"name","definition"} (wast2json) and
+        // {"instance","module"} (wasm-tools json-from-wast).
+        std::string_view ModName;
+        std::string_view ASTName;
+        if (Cmd["instance"].get(ModName) != simdjson::error_code::SUCCESS) {
+          ModName = Cmd["name"];
         }
+        if (Cmd["module"].get(ASTName) != simdjson::error_code::SUCCESS) {
+          ASTName = Cmd["definition"];
+        }
+        const uint64_t LineNumber = Cmd["line"];
         auto ASTDef = ASTMap.find(std::string(ASTName));
         if (ASTDef == ASTMap.end()) {
           EXPECT_NE(LineNumber, LineNumber);
@@ -935,6 +1125,19 @@ void SpecTest::processCommands(ContextHandle Ctx, std::string_view Proposal,
         }
         if (auto It = Alias.find(std::string(ModName)); It != Alias.end()) {
           ModName = It->second;
+        }
+        // Subsequent anonymous invokes target this instance.
+        LastModName = ModName;
+        if (std::holds_alternative<std::unique_ptr<AST::Component::Component>>(
+                ASTDef->second)) {
+          auto &ASTComp = *std::get<std::unique_ptr<AST::Component::Component>>(
+              ASTDef->second);
+          if (onCompInstanceFromDef(Ctx, std::string(ModName), ASTComp)) {
+            EXPECT_TRUE(true);
+          } else {
+            EXPECT_NE(LineNumber, LineNumber);
+          }
+          return;
         }
         auto &ASTMod = *std::get<std::unique_ptr<AST::Module>>(ASTDef->second);
         if (onInstanceFromDef(Ctx, std::string(ModName), ASTMod)) {

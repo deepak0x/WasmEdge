@@ -60,10 +60,17 @@ Expect<void> CanonResourceRepHostFunc::run(const Runtime::CallingFrame &,
                                            Span<ValVariant> Rets) {
   const uint32_t Idx = Args[0].get<uint32_t>();
   auto *Slot = Inst->handleGet(Idx);
-  if (Slot == nullptr || Slot->RT != RT) {
-    spdlog::error(ErrCode::Value::ComponentTrap);
-    spdlog::error("    resource.rep: invalid handle {}"sv, Idx);
-    return Unexpect(ErrCode::Value::ComponentTrap);
+  if (Slot == nullptr) {
+    spdlog::error(ErrCode::Value::ComponentHandleUnknown);
+    spdlog::error("    resource.rep: unknown handle index {}"sv, Idx);
+    return Unexpect(ErrCode::Value::ComponentHandleUnknown);
+  }
+  if (Slot->RT != RT) {
+    spdlog::error(ErrCode::Value::ComponentHandleWrongType);
+    spdlog::error("    resource.rep: handle index {} used with the wrong "
+                  "type"sv,
+                  Idx);
+    return Unexpect(ErrCode::Value::ComponentHandleWrongType);
   }
   Rets[0].emplace<uint32_t>(Slot->Rep);
   return {};
@@ -83,15 +90,22 @@ Expect<void> CanonResourceDropHostFunc::run(const Runtime::CallingFrame &,
   (void)Rets;
   const uint32_t Idx = Args[0].get<uint32_t>();
   auto *Slot = Inst->handleGet(Idx);
-  if (Slot == nullptr || Slot->RT != RT) {
-    spdlog::error(ErrCode::Value::ComponentTrap);
-    spdlog::error("    resource.drop: invalid handle {}"sv, Idx);
-    return Unexpect(ErrCode::Value::ComponentTrap);
+  if (Slot == nullptr) {
+    spdlog::error(ErrCode::Value::ComponentHandleUnknown);
+    spdlog::error("    resource.drop: unknown handle index {}"sv, Idx);
+    return Unexpect(ErrCode::Value::ComponentHandleUnknown);
   }
-  if (Slot->Lends != 0) {
-    spdlog::error(ErrCode::Value::ComponentTrap);
+  if (Slot->RT != RT) {
+    spdlog::error(ErrCode::Value::ComponentHandleWrongType);
+    spdlog::error("    resource.drop: handle index {} used with the wrong "
+                  "type"sv,
+                  Idx);
+    return Unexpect(ErrCode::Value::ComponentHandleWrongType);
+  }
+  if (Slot->Own && Slot->Lends != 0) {
+    spdlog::error(ErrCode::Value::ComponentResourceBorrowed);
     spdlog::error("    resource.drop: handle {} still lent"sv, Idx);
-    return Unexpect(ErrCode::Value::ComponentTrap);
+    return Unexpect(ErrCode::Value::ComponentResourceBorrowed);
   }
   const auto Removed = Inst->handleRemove(Idx);
   if (Removed->Own) {

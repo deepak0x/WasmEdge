@@ -384,6 +384,7 @@ Validator::validate(const AST::Component::DefType &DType) noexcept {
     Probe.K = CtxView::ExternInfo::Kind::Type;
     Probe.Type = S.Types.back();
     EXPECTED_TRY(checkTypeSize(sizeOfExtern(Probe)));
+    EXPECTED_TRY(checkTypeDepth(depthOfExtern(Probe)));
   }
   return {};
 }

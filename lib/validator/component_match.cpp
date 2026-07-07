@@ -340,7 +340,10 @@ void Validator::resetNestedMatchWhy() noexcept {
 bool Validator::matchInstanceInfo(const CtxView::InstanceInfo &Sub,
                                   const CtxView::InstanceInfo &Sup,
                                   ResourceSubst &Subst) noexcept {
-  for (const auto &[Name, SupE] : Sup.Exports) {
+  // Walk expected exports in declaration order: abstract resources must
+  // bind before the functions that reference them.
+  auto MatchOne = [&](const std::string &Name,
+                      const CtxView::ExternInfo &SupE) noexcept {
     auto It = Sub.Exports.find(Name);
     if (It == Sub.Exports.end()) {
       MatchWhy = ErrCode::Value::InstanceMissingExpectedExport;
@@ -348,6 +351,21 @@ bool Validator::matchInstanceInfo(const CtxView::InstanceInfo &Sub,
     }
     if (!matchExtern(It->second, SupE, Subst)) {
       resetNestedMatchWhy();
+      return false;
+    }
+    return true;
+  };
+  if (!Sup.Order.empty()) {
+    for (const auto &Name : Sup.Order) {
+      auto SupIt = Sup.Exports.find(Name);
+      if (SupIt != Sup.Exports.end() && !MatchOne(Name, SupIt->second)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  for (const auto &[Name, SupE] : Sup.Exports) {
+    if (!MatchOne(Name, SupE)) {
       return false;
     }
   }
@@ -920,6 +938,7 @@ Expect<const CtxView::InstanceInfo *> Validator::instantiateComponentInfo(
   Probe.K = CtxView::ExternInfo::Kind::Instance;
   Probe.Inst = Result;
   EXPECTED_TRY(checkTypeSize(sizeOfExtern(Probe)));
+  EXPECTED_TRY(checkTypeDepth(depthOfExtern(Probe)));
   return Result;
 }
 
@@ -1403,6 +1422,136 @@ uint64_t Validator::sizeOfExtern(const CtxView::ExternInfo &Info) noexcept {
   }
   }
   return 1;
+}
+
+// Depth of a value type: primitives and leaves count 1; wrappers add 1.
+// Guards the recursive canonical-ABI walkers (matches the reference
+// engine's nesting limit).
+// NOLINTNEXTLINE(misc-no-recursion)
+uint64_t Validator::depthOfValType(const CtxView::QualValType &Q) noexcept {
+  const auto N = normalizeValType(Q);
+  if (!N.Valid || N.DVT == nullptr) {
+    return 1;
+  }
+  auto It = TypeDepthMemo.find(N.DVT);
+  if (It != TypeDepthMemo.end()) {
+    return It->second;
+  }
+  TypeDepthMemo.emplace(N.DVT, 1); // Break cycles defensively.
+  const auto &D = *N.DVT;
+  uint64_t Max = 0;
+  auto Sub = [&](const ComponentValType &VT) noexcept {
+    Max = std::max(Max, depthOfValType({VT, N.Home, N.Remap}));
+  };
+  if (D.isRecordTy()) {
+    for (const auto &LT : D.getRecord().LabelTypes) {
+      Sub(LT.getValType());
+    }
+  } else if (D.isVariantTy()) {
+    for (const auto &[Name, VT] : D.getVariant().Cases) {
+      if (VT.has_value()) {
+        Sub(*VT);
+      }
+    }
+  } else if (D.isListTy()) {
+    Sub(D.getList().ValTy);
+  } else if (D.isTupleTy()) {
+    for (const auto &VT : D.getTuple().Types) {
+      Sub(VT);
+    }
+  } else if (D.isOptionTy()) {
+    Sub(D.getOption().ValTy);
+  } else if (D.isResultTy()) {
+    if (D.getResult().ValTy.has_value()) {
+      Sub(*D.getResult().ValTy);
+    }
+    if (D.getResult().ErrTy.has_value()) {
+      Sub(*D.getResult().ErrTy);
+    }
+  }
+  const uint64_t Depth = Max + 1;
+  TypeDepthMemo[N.DVT] = Depth;
+  return Depth;
+}
+
+// NOLINTNEXTLINE(misc-no-recursion)
+uint64_t Validator::depthOfExtern(const CtxView::ExternInfo &Info) noexcept {
+  using Kind = CtxView::ExternInfo::Kind;
+  uint64_t Max = 0;
+  switch (Info.K) {
+  case Kind::Func:
+    if (Info.Func.FT != nullptr) {
+      for (const auto &P : Info.Func.FT->getParamList()) {
+        Max = std::max(Max, depthOfValType({P.getValType(), Info.Func.Home,
+                                            Info.Func.Remap}));
+      }
+      for (const auto &R : Info.Func.FT->getResultList()) {
+        Max = std::max(Max, depthOfValType({R.getValType(), Info.Func.Home,
+                                            Info.Func.Remap}));
+      }
+    }
+    break;
+  case Kind::Type:
+    if (Info.Type.DT != nullptr && Info.Type.DT->isDefValType()) {
+      ComponentValType Self;
+      // Walk through the definition itself.
+      Max = std::max(Max,
+                     depthOfValType({Self, Info.Type.Home, Info.Type.Remap}));
+      const auto &D = Info.Type.DT->getDefValType();
+      auto Sub = [&](const ComponentValType &VT) noexcept {
+        Max = std::max(
+            Max, depthOfValType({VT, Info.Type.Home, Info.Type.Remap}) + 1);
+      };
+      if (D.isListTy()) {
+        Sub(D.getList().ValTy);
+      } else if (D.isOptionTy()) {
+        Sub(D.getOption().ValTy);
+      } else if (D.isRecordTy()) {
+        for (const auto &LT : D.getRecord().LabelTypes) {
+          Sub(LT.getValType());
+        }
+      } else if (D.isTupleTy()) {
+        for (const auto &VT : D.getTuple().Types) {
+          Sub(VT);
+        }
+      } else if (D.isVariantTy()) {
+        for (const auto &[Name, VT] : D.getVariant().Cases) {
+          if (VT.has_value()) {
+            Sub(*VT);
+          }
+        }
+      } else if (D.isResultTy()) {
+        if (D.getResult().ValTy.has_value()) {
+          Sub(*D.getResult().ValTy);
+        }
+        if (D.getResult().ErrTy.has_value()) {
+          Sub(*D.getResult().ErrTy);
+        }
+      }
+    }
+    break;
+  case Kind::Instance:
+    if (Info.Inst != nullptr) {
+      for (const auto &[Name, E] : Info.Inst->Exports) {
+        Max = std::max(Max, depthOfExtern(E));
+      }
+    }
+    break;
+  default:
+    break;
+  }
+  return Max;
+}
+
+Expect<void> Validator::checkTypeDepth(uint64_t Depth) noexcept {
+  // The reference engine bounds value-type nesting at 100.
+  if (Depth > 100) {
+    spdlog::error(ErrCode::Value::ComponentTypeNestingDepth);
+    spdlog::error("    Value type nesting depth {} exceeds the limit."sv,
+                  Depth);
+    return Unexpect(ErrCode::Value::ComponentTypeNestingDepth);
+  }
+  return {};
 }
 
 Expect<void> Validator::checkTypeSize(uint64_t Size) noexcept {

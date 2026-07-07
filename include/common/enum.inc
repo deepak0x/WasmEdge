@@ -1283,6 +1283,7 @@ E(ComponentInstanceNotValidExport, 0x0280,
 E(ComponentInstanceNotValidImport, 0x027F,
   "instance not valid to be used as import")
 E(ComponentTypeSizeLimit, 0x027E, "effective type size exceeds the limit")
+E(ComponentTypeNestingDepth, 0x0275, "type nesting is too deep")
 // Empty composite type diagnostics
 E(RecordMustHaveField, 0x027A, "record type must have at least one field")
 E(EnumMustHaveVariant, 0x027B, "enum type must have at least one variant")
@@ -1323,6 +1324,25 @@ E(ResourceDropArgument, 0x03A3,
 // Component model not implemented
 E(ComponentNotImplInstantiate, 0x03A4,
   "component model (instantiation) not implemented")
+E(ComponentImportNotFound, 0x03A5, "was not found")
+E(ComponentImportExpectedFunc, 0x03A6, "expected function found instance")
+E(ComponentImportExpectedInstance, 0x03A7, "expected instance found func")
+E(ComponentImportExpectedModule, 0x03A8, "expected module found instance")
+E(ComponentHandleUnknown, 0x03A9, "unknown handle index")
+E(ComponentHandleWrongType, 0x03AA, "used with the wrong type")
+E(ComponentResourceBorrowed, 0x03AB,
+  "cannot remove owned resource while borrowed")
+E(ComponentCharInvalid, 0x03AC, "invalid `char` bit pattern")
+E(ComponentDiscriminantInvalid, 0x03AD, "invalid variant discriminant")
+E(ComponentPtrUnaligned, 0x03AE, "unaligned pointer")
+E(ComponentStrOOB, 0x03AF, "string content out-of-bounds")
+E(ComponentReallocOOB, 0x03B0, "realloc return: beyond end of memory")
+E(ComponentCoreModNotDefined, 0x03B1, "not defined")
+E(ComponentCoreModWrongType, 0x03B2, "has the wrong type")
+E(ComponentCoreModKindMismatch, 0x03B3, "expected")
+E(ComponentResourceMismatched, 0x03B4, "mismatched resource types")
+E(ComponentImportExpectedResource, 0x03B5, "expected resource found func")
+E(ComponentCannotEnter, 0x03B6, "cannot enter component instance")
 // @}
 
 // Execution phase

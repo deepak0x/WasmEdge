@@ -525,6 +525,34 @@ VM::unsafeExecute(std::string_view ModName, std::string_view Func,
   return unsafeExecute(FindModInst, Func, Params, ParamTypes);
 }
 
+Expect<void>
+VM::unsafeRegisterComponent(std::string_view CompName,
+                            const std::filesystem::path &FilePath) {
+  EXPECTED_TRY(auto Unit, LoaderEngine.parseWasmUnit(FilePath));
+  if (!std::holds_alternative<std::unique_ptr<AST::Component::Component>>(
+          Unit)) {
+    spdlog::error(ErrCode::Value::MalformedVersion);
+    return Unexpect(ErrCode::Value::MalformedVersion);
+  }
+  auto CompAST =
+      std::move(std::get<std::unique_ptr<AST::Component::Component>>(Unit));
+  EXPECTED_TRY(ValidatorEngine.validate(*CompAST));
+  EXPECTED_TRY(auto Inst,
+               ExecutorEngine.registerComponent(StoreRef, *CompAST, CompName));
+  RegCompASTs.push_back(std::move(CompAST));
+  RegCompInsts.push_back(std::move(Inst));
+  return {};
+}
+
+Expect<void>
+VM::unsafeRegisterComponent(std::string_view CompName,
+                            const AST::Component::Component &CompAST) {
+  EXPECTED_TRY(auto Inst,
+               ExecutorEngine.registerComponent(StoreRef, CompAST, CompName));
+  RegCompInsts.push_back(std::move(Inst));
+  return {};
+}
+
 Expect<std::vector<std::pair<ComponentValVariant, ComponentValType>>>
 VM::unsafeExecuteComponent(std::string_view Func,
                            Span<const ComponentValVariant> Params,
@@ -585,6 +613,16 @@ VM::unsafeExecuteComponent(const Runtime::Instance::ComponentInstance *CompInst,
   // Find exported function by name.
   Runtime::Instance::Component::FunctionInstance *FuncInst =
       CompInst->findFunction(Func);
+
+  // Callers that pass values without types (e.g. the spec-test harness)
+  // take the parameter types from the function's own type.
+  std::vector<ComponentValType> DerivedTypes;
+  if (FuncInst != nullptr && ParamTypes.empty() && !Params.empty()) {
+    for (const auto &P : FuncInst->getFuncType().getParamList()) {
+      DerivedTypes.push_back(P.getValType());
+    }
+    ParamTypes = DerivedTypes;
+  }
 
   // Execute function.
   return ExecutorEngine.invoke(FuncInst, Params, ParamTypes)

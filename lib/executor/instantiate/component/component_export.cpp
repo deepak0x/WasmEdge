@@ -61,8 +61,13 @@ Executor::instantiate(Runtime::Instance::ComponentInstance &CompInst,
         CompInst.addTypeWithResource(CompInst.getType(Index),
                                      CompInst.getTypeResource(Index));
         break;
-      case AST::Component::Sort::SortType::Value:
       case AST::Component::Sort::SortType::Component:
+        CompInst.exportComponent(Export.getName(), Index);
+        CompInst.addComponentEntry(CompInst.getComponent(Index),
+                                   CompInst.getComponentShape(Index),
+                                   CompInst.getComponentEnv(Index));
+        break;
+      case AST::Component::Sort::SortType::Value:
         // TODO: COMPONENT - complete the export instantiation.
         spdlog::error(ErrCode::Value::ComponentNotImplInstantiate);
         spdlog::error("    incomplete export {}"sv, Export.getName());

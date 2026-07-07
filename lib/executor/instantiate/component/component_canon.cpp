@@ -39,7 +39,8 @@ Expect<std::vector<ValVariant>> Executor::convValsToCoreWASM(
     Runtime::Instance::MemoryInstance *MemInst,
     const Runtime::Instance::ComponentInstance *CompInst, StringEncoding Enc) {
   // Wrapper over the spec's lower_flat_values (CanonicalABI.md L3212-3232).
-  CanonicalABI::CanonCtx Cx{this, MemInst, RFuncInst, CompInst, {}, {}, Enc};
+  CanonicalABI::CanonCtx Cx{this, MemInst, RFuncInst, CompInst,
+                            {},   {},      nullptr,   Enc};
   return CanonicalABI::lowerFlatValues(Cx, Vals, ValTypes,
                                        CanonicalABI::MaxFlatParams);
 }
@@ -51,7 +52,8 @@ Executor::convValsToComponent(
     Runtime::Instance::MemoryInstance *MemInst,
     const Runtime::Instance::ComponentInstance *CompInst, StringEncoding Enc) {
   // Wrapper over the spec's lift_flat_values (CanonicalABI.md L3193-3202).
-  CanonicalABI::CanonCtx Cx{this, MemInst, nullptr, CompInst, {}, {}, Enc};
+  CanonicalABI::CanonCtx Cx{this, MemInst, nullptr, CompInst,
+                            {},   {},      nullptr, Enc};
   CanonicalABI::FlatIter VI(CoreVals);
   EXPECTED_TRY(auto Lifted,
                CanonicalABI::liftFlatValues(Cx, VI, ValTypes,
@@ -211,7 +213,8 @@ Executor::instantiate(Runtime::Instance::ComponentInstance &CompInst,
       // gated types) fail at instantiation time. flattenFuncType doesn't need
       // Mem / Realloc to compute the signature. The callee's function type
       // carries type indices of the callee's own instance.
-      CanonicalABI::CanonCtx PrefCx{this, nullptr, nullptr, &CompInst, {}, {}};
+      CanonicalABI::CanonCtx PrefCx{this, nullptr, nullptr, &CompInst,
+                                    {},   {},      nullptr};
       if (const auto *CalleeComp = Callee->getComponentInstance();
           CalleeComp != nullptr && CalleeComp != &CompInst) {
         PrefCx.TypeResolver = [CalleeComp](uint32_t I) {

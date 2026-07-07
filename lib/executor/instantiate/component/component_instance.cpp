@@ -239,13 +239,23 @@ Executor::instantiate(Runtime::Instance::ComponentInstance &CompInst,
             Comp->exportCoreTag(Exp.getName(), CoreExpIdx[4]);
             CoreExpIdx[4]++;
             break;
-          case AST::Component::Sort::CoreSortType::Type:
           case AST::Component::Sort::CoreSortType::Module:
+            if (const auto *M = CompInst.getModule(Idx)) {
+              Comp->addModule(*M);
+              Comp->exportCoreModule(Exp.getName(), CoreExpIdx[5]);
+              CoreExpIdx[5]++;
+            }
+            break;
           case AST::Component::Sort::CoreSortType::Instance:
-            // TODO: COMPONENT - complete the instance instantiation.
-            spdlog::error(ErrCode::Value::ComponentNotImplInstantiate);
-            spdlog::error("    incomplete inline export {}"sv, Exp.getName());
-            return Unexpect(ErrCode::Value::ComponentNotImplInstantiate);
+            if (const auto *MI = CompInst.getCoreModuleInstance(Idx)) {
+              Comp->addCoreModuleInstance(MI);
+              Comp->exportCoreModuleInstance(Exp.getName(), CoreExpIdx[6]);
+              CoreExpIdx[6]++;
+            }
+            break;
+          case AST::Component::Sort::CoreSortType::Type:
+            // Core types carry no runtime state.
+            break;
           default:
             assumingUnreachable();
           }

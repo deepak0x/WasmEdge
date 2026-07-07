@@ -436,6 +436,19 @@ public:
   void setParent(const ComponentInstance *P) noexcept { Parent = P; }
   const ComponentInstance *getParent() const noexcept { return Parent; }
 
+  // Reentrance guard: a component instance cannot be entered while it is
+  // already executing or still instantiating.
+  void setEntered(bool E) const noexcept { Entered = E; }
+  bool isEntered() const noexcept { return Entered; }
+
+  // A component index entry: the definition (AST or host shape) plus the
+  // lexical environment the value closed over.
+  struct CompEntry {
+    const AST::Component::Component *Ast;
+    const AST::Component::ComponentType *Shape;
+    const ComponentInstance *Env;
+  };
+
   void addComponent(const AST::Component::Component &C) noexcept {
     // A component value closes over its lexical environment: outer aliases
     // inside it resolve against the defining instance, wherever it is
@@ -453,6 +466,15 @@ public:
   }
   const ComponentInstance *getComponentEnv(uint32_t Index) const noexcept {
     return Index < Comps.size() ? Comps[Index].Env : nullptr;
+  }
+  void exportComponent(std::string_view Name, uint32_t Idx) noexcept {
+    if (Idx < Comps.size()) {
+      ExpComps.insert_or_assign(std::string(Name), Comps[Idx]);
+    }
+  }
+  const CompEntry *findComponentEntry(std::string_view Name) const noexcept {
+    auto It = ExpComps.find(Name);
+    return It != ExpComps.end() ? &It->second : nullptr;
   }
   const AST::Component::Component *getComponent(uint32_t Index) const noexcept {
     return Index < Comps.size() ? Comps[Index].Ast : nullptr;
@@ -568,6 +590,9 @@ public:
   }
 
   // Index space: core module instance.
+  void addCoreModuleInstance(const ModuleInstance *Inst) noexcept {
+    CoreModInsts.push_back(Inst);
+  }
   void addCoreModuleInstance(std::unique_ptr<ModuleInstance> &&Inst) noexcept {
     OwnedCoreModInsts.push_back(std::move(Inst));
     CoreModInsts.push_back(OwnedCoreModInsts.back().get());
@@ -602,7 +627,9 @@ public:
 private:
   std::string CompName;
   const ComponentInstance *Parent = nullptr;
+  mutable bool Entered = false;
   std::map<std::string, const AST::Module *, std::less<>> ExpCoreMods;
+  std::map<std::string, CompEntry, std::less<>> ExpComps;
   std::vector<const ResourceTypeRT *> TypeResources;
   std::vector<std::unique_ptr<ResourceTypeRT>> OwnedResourceTypes;
   std::vector<std::unique_ptr<AST::Component::DefType>> OwnedDefTypes;
@@ -618,11 +645,6 @@ private:
   // TODO: values
   std::vector<const AST::Component::DefType *> Types;
   std::vector<const ComponentInstance *> CompInsts;
-  struct CompEntry {
-    const AST::Component::Component *Ast;
-    const AST::Component::ComponentType *Shape;
-    const ComponentInstance *Env;
-  };
   std::vector<CompEntry> Comps;
   std::vector<FunctionInstance *> CoreFuncInsts;
   std::vector<TableInstance *> CoreTabInsts;

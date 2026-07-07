@@ -68,6 +68,10 @@ struct CanonCtx {
   std::function<const Runtime::Instance::ComponentInstance::ResourceTypeRT *(
       uint32_t)>
       ResourceResolver;
+  /// When set, borrows lifted through this context are recorded so the
+  /// caller can release the lends after the call returns.
+  std::vector<std::pair<const Runtime::Instance::ComponentInstance *, uint32_t>>
+      *LiftedBorrows = nullptr;
   /// Guest string encoding for the canon function this context serves
   /// (CanonicalABI.md `string-encoding` option). Selects the byte layout used
   /// by load / store / lift_flat / lower_flat for `string` values. Defaults to

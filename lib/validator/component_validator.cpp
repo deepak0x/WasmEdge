@@ -28,6 +28,7 @@ Expect<void>
 Validator::validate(const AST::Component::Component &Comp) noexcept {
   CompCtx.reset();
   TypeSizeMemo.clear();
+  TypeDepthMemo.clear();
   MatchWhy = ErrCode::Value::Success;
   EXPECTED_TRY(validateComponent(Comp));
   // Deferred function-body validation of all nested core modules.
