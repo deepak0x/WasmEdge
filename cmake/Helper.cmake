@@ -408,6 +408,34 @@ if((WASMEDGE_LINK_LLVM_STATIC OR WASMEDGE_BUILD_STATIC_LIB) AND WASMEDGE_USE_LLV
   endif()
 endif()
 
+# Re-export a target's interface include directories as system includes, so that
+# consumers reach its headers through -isystem / -external:I instead of -I and
+# never compile them with the project warning flags. The SYSTEM target property
+# would do this directly, but it needs CMake 3.25 and the floor here is 3.18.
+function(wasmedge_mark_system_includes target)
+  if(NOT TARGET ${target})
+    return()
+  endif()
+  get_target_property(WASMEDGE_ALIASED ${target} ALIASED_TARGET)
+  if(WASMEDGE_ALIASED)
+    set(target ${WASMEDGE_ALIASED})
+  endif()
+  get_target_property(WASMEDGE_INCLUDE_DIRS
+    ${target} INTERFACE_INCLUDE_DIRECTORIES)
+  if(NOT WASMEDGE_INCLUDE_DIRS)
+    return()
+  endif()
+  get_target_property(WASMEDGE_SYSTEM_INCLUDE_DIRS
+    ${target} INTERFACE_SYSTEM_INCLUDE_DIRECTORIES)
+  if(NOT WASMEDGE_SYSTEM_INCLUDE_DIRS)
+    set(WASMEDGE_SYSTEM_INCLUDE_DIRS)
+  endif()
+  list(APPEND WASMEDGE_SYSTEM_INCLUDE_DIRS ${WASMEDGE_INCLUDE_DIRS})
+  list(REMOVE_DUPLICATES WASMEDGE_SYSTEM_INCLUDE_DIRS)
+  set_property(TARGET ${target} PROPERTY
+    INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${WASMEDGE_SYSTEM_INCLUDE_DIRS})
+endfunction()
+
 function(wasmedge_setup_simdjson)
   if(TARGET simdjson::simdjson)
     return()
@@ -482,6 +510,9 @@ function(wasmedge_setup_spdlog)
   find_package(spdlog QUIET)
   if(spdlog_FOUND)
     message(STATUS "spdlog found")
+    wasmedge_mark_system_includes(spdlog::spdlog)
+    wasmedge_mark_system_includes(fmt::fmt)
+    wasmedge_mark_system_includes(fmt::fmt-header-only)
   else()
     include(FetchContent)
     message(STATUS "Downloading fmt source")
@@ -492,9 +523,11 @@ function(wasmedge_setup_spdlog)
       GIT_SHALLOW    TRUE
     )
     set(FMT_INSTALL OFF CACHE BOOL "Generate the install target." FORCE)
+    set(FMT_SYSTEM_HEADERS ON CACHE BOOL "Expose headers with marking them as system." FORCE)
     FetchContent_MakeAvailable(fmt)
     message(STATUS "Downloading fmt source -- done")
     wasmedge_setup_target(fmt)
+    wasmedge_mark_system_includes(fmt)
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
       target_compile_options(fmt
         PUBLIC
@@ -523,9 +556,11 @@ function(wasmedge_setup_spdlog)
     )
     set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "Build shared library" FORCE)
     set(SPDLOG_FMT_EXTERNAL ON  CACHE BOOL "Use external fmt library instead of bundled" FORCE)
+    set(SPDLOG_SYSTEM_INCLUDES ON CACHE BOOL "Include as system headers (skip for clang-tidy)." FORCE)
     FetchContent_MakeAvailable(spdlog)
     message(STATUS "Downloading spdlog source -- done")
     wasmedge_setup_target(spdlog)
+    wasmedge_mark_system_includes(spdlog)
     wasmedge_suppress_shadow_warnings(spdlog)
     if (WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
       target_compile_options(spdlog
