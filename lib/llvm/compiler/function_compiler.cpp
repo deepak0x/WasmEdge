@@ -24,6 +24,7 @@ FunctionCompiler::FunctionCompiler(LLVM::Compiler::CompileContext &Context,
   if (F.Fn) {
     Builder.positionAtEnd(LLVM::BasicBlock::create(LLContext, F.Fn, "entry"));
     ExecCtx = Builder.createLoad(Context.ExecCtxTy, F.Fn.getFirstParam());
+    PendingExnTagPtr = Context.getPendingExceptionTag(Builder, ExecCtx);
 
     if (InstructionCounting) {
       LocalInstrCount = Builder.createAlloca(Context.Int64Ty);
@@ -80,6 +81,21 @@ Expect<void> FunctionCompiler::compile(
         Context.Trap, {LLContext.getInt32(static_cast<uint32_t>(Error))});
     CallTrap.addCallSiteAttribute(Context.NoReturn);
     Builder.createUnreachable();
+  }
+
+  if (UnwindBB) {
+    // The escape path of the exceptions not caught in this function: leave
+    // the pending state set and return. The caller never reads the results
+    // when an exception is pending.
+    Builder.positionAtEnd(UnwindBB);
+    updateInstrCount();
+    updateGasAtTrap();
+    auto Ty = F.Ty.getReturnType();
+    if (Ty.isVoidTy()) {
+      Builder.createRetVoid();
+    } else {
+      Builder.createRet(LLVM::Value::getUndef(Ty));
+    }
   }
   return {};
 }
@@ -176,8 +192,8 @@ Expect<void> FunctionCompiler::compile(AST::InstrView Instrs) noexcept {
       return {};
     }
     case OpCode::Try_table:
-      // TODO: EXCEPTION - implement the AOT.
-      return Unexpect(ErrCode::Value::AOTNotImpl);
+      compileTryTableOp(Instr);
+      return {};
     case OpCode::End: {
       auto Entry = leaveBlock();
       if (Entry.ElseBlock) {
@@ -216,9 +232,15 @@ Expect<void> FunctionCompiler::compile(AST::InstrView Instrs) noexcept {
     case OpCode::Nop:
       break;
     case OpCode::Throw:
+      updateInstrCount();
+      updateGas();
+      compileThrowOp(Instr.getTargetIndex());
+      break;
     case OpCode::Throw_ref:
-      // TODO: EXCEPTION - implement the AOT.
-      return Unexpect(ErrCode::Value::AOTNotImpl);
+      updateInstrCount();
+      updateGas();
+      compileThrowRefOp();
+      break;
     case OpCode::Br: {
       const auto Label = Instr.getJump().TargetIndex;
       setLableJumpPHI(Label);
@@ -357,9 +379,6 @@ Expect<void> FunctionCompiler::compile(AST::InstrView Instrs) noexcept {
       Builder.positionAtEnd(
           LLVM::BasicBlock::create(LLContext, F.Fn, "ret_call_ref.end"));
       break;
-    case OpCode::Try_table:
-      // TODO: EXCEPTION - implement the AOT.
-      return Unexpect(ErrCode::Value::AOTNotImpl);
 
     // Reference Instructions
     case OpCode::Ref__null:
@@ -1150,6 +1169,189 @@ void FunctionCompiler::updateGasAtTrap() noexcept {
   }
 }
 
+void FunctionCompiler::compileTryTableOp(
+    const AST::Instruction &Instr) noexcept {
+  const auto &TryDesc = Instr.getTryCatch();
+  auto Type = Context.resolveBlockType(TryDesc.ResType);
+  const auto Arity = Type.first.size();
+  std::vector<LLVM::Value> Args(Arity);
+
+  auto Block = LLVM::BasicBlock::create(LLContext, F.Fn, "try_table");
+  auto EndBlock = LLVM::BasicBlock::create(LLContext, F.Fn, "try_table.end");
+
+  if (isUnreachable()) {
+    // The body is dead code, therefore no dispatch block is emitted and no
+    // pending checks inside will target it.
+    for (size_t I = 0; I < Arity; ++I) {
+      auto Ty = toLLVMType(LLContext, Type.first[I]);
+      Args[I] = LLVM::Value::getUndef(Ty);
+    }
+    Builder.createBr(Block);
+    Builder.positionAtEnd(Block);
+    enterBlock(EndBlock, {}, {}, std::move(Args), std::move(Type));
+    checkStop();
+    updateGas();
+    return;
+  }
+
+  for (size_t I = 0; I < Arity; ++I) {
+    const size_t J = Arity - 1 - I;
+    Args[J] = stackPop();
+  }
+  Builder.createBr(Block);
+
+  LLVM::BasicBlock DispatchBB = {};
+  const auto &Catch = TryDesc.Catch;
+  if (!Catch.empty()) {
+    // Emit the dispatch code with the outer label context because the catch
+    // clause label indices are relative to the block enclosing this
+    // try_table instruction.
+    DispatchBB = LLVM::BasicBlock::create(LLContext, F.Fn, "try.dispatch");
+    Builder.positionAtEnd(DispatchBB);
+
+    const auto CatchNum = static_cast<uint32_t>(Catch.size());
+    std::vector<LLVM::Value> Records;
+    Records.reserve(static_cast<size_t>(CatchNum) * 2);
+    uint32_t MaxOutNum = 0;
+    for (const auto &C : Catch) {
+      const uint32_t Flags = (C.IsRef ? 1U : 0U) | (C.IsAll ? 2U : 0U);
+      Records.push_back(LLContext.getInt32(Flags));
+      Records.push_back(LLContext.getInt32(C.IsAll ? 0 : C.TagIndex));
+      uint32_t OutNum = C.IsRef ? 1U : 0U;
+      if (!C.IsAll) {
+        assuming(C.TagIndex < Context.Tags.size());
+        const auto &TagFuncType =
+            Context.CompositeTypes[Context.Tags[C.TagIndex]]->getFuncType();
+        OutNum += static_cast<uint32_t>(TagFuncType.getParamTypes().size());
+      }
+      MaxOutNum = std::max(MaxOutNum, OutNum);
+    }
+
+    LLVM::Value Clauses = Builder.createArray(static_cast<size_t>(CatchNum) * 2,
+                                              sizeof(uint32_t));
+    Builder.createArrayPtrStore(Records, Clauses, Context.Int8Ty,
+                                sizeof(uint32_t));
+    LLVM::Value Out = Builder.createArray(MaxOutNum, LLVM::kValSize);
+    auto Sel = Builder.createCall(
+        Context.getIntrinsic(
+            Builder, Executable::Intrinsics::kCatchClause,
+            LLVM::Type::getFunctionType(
+                Context.Int32Ty,
+                {Context.Int8PtrTy, Context.Int32Ty, Context.Int8PtrTy},
+                false)),
+        {Clauses, LLContext.getInt32(CatchNum), Out});
+    auto Switch = Builder.createSwitch(Sel, getEHDispatchTarget(), CatchNum);
+
+    for (uint32_t I = 0; I < CatchNum; ++I) {
+      const auto &C = Catch[I];
+      auto CaseBB = LLVM::BasicBlock::create(LLContext, F.Fn, "catch");
+      Switch.addCase(LLContext.getInt32(I), CaseBB);
+      Builder.positionAtEnd(CaseBB);
+
+      const size_t StackSizeBefore = Stack.size();
+      uint32_t OutIdx = 0;
+      if (!C.IsAll) {
+        const auto &TagFuncType =
+            Context.CompositeTypes[Context.Tags[C.TagIndex]]->getFuncType();
+        for (const auto &PType : TagFuncType.getParamTypes()) {
+          stackPush(Builder.createValuePtrLoad(
+              toLLVMType(LLContext, PType), Out, Context.Int8Ty,
+              static_cast<uint64_t>(OutIdx) * LLVM::kValSize));
+          ++OutIdx;
+        }
+      }
+      if (C.IsRef) {
+        stackPush(Builder.createValuePtrLoad(
+            Context.Int64x2Ty, Out, Context.Int8Ty,
+            static_cast<uint64_t>(OutIdx) * LLVM::kValSize));
+      }
+      setLableJumpPHI(C.LabelIndex);
+      Builder.createBr(getLabel(C.LabelIndex));
+      Stack.erase(Stack.begin() + static_cast<int64_t>(StackSizeBefore),
+                  Stack.end());
+    }
+  }
+
+  Builder.positionAtEnd(Block);
+  enterBlock(EndBlock, {}, {}, std::move(Args), std::move(Type));
+  ControlStack.back().TryDispatchBB = DispatchBB;
+  checkStop();
+  updateGas();
+}
+
+void FunctionCompiler::compileThrowOp(const uint32_t TagIndex) noexcept {
+  assuming(TagIndex < Context.Tags.size());
+  const auto &TagFuncType =
+      Context.CompositeTypes[Context.Tags[TagIndex]]->getFuncType();
+  const auto Arity = static_cast<uint32_t>(TagFuncType.getParamTypes().size());
+
+  std::vector<LLVM::Value> Payload(Arity);
+  for (uint32_t I = 0; I < Arity; ++I) {
+    Payload[Arity - 1 - I] = stackPop();
+  }
+  LLVM::Value Vals = Builder.createArray(Arity, LLVM::kValSize);
+  Builder.createArrayPtrStore(Payload, Vals, Context.Int8Ty, LLVM::kValSize);
+
+  Builder.createCall(
+      Context.getIntrinsic(
+          Builder, Executable::Intrinsics::kThrow,
+          LLVM::Type::getFunctionType(
+              Context.VoidTy,
+              {Context.Int32Ty, Context.Int8PtrTy, Context.Int32Ty}, false)),
+      {LLContext.getInt32(TagIndex), Vals, LLContext.getInt32(Arity)});
+
+  Builder.createBr(getEHDispatchTarget());
+  setUnreachable();
+  Builder.positionAtEnd(LLVM::BasicBlock::create(LLContext, F.Fn, "throw.end"));
+}
+
+void FunctionCompiler::compileThrowRefOp() noexcept {
+  auto Ref = Builder.createBitCast(stackPop(), Context.Int64x2Ty);
+  auto OkBB = LLVM::BasicBlock::create(LLContext, F.Fn, "throw_ref.ok");
+  auto IsRefNotNull = Builder.createLikely(Builder.createICmpNE(
+      Builder.createExtractElement(Ref, LLContext.getInt64(1)),
+      LLContext.getInt64(0)));
+  Builder.createCondBr(IsRefNotNull, OkBB,
+                       getTrapBB(ErrCode::Value::AccessNullException));
+  Builder.positionAtEnd(OkBB);
+
+  Builder.createCall(
+      Context.getIntrinsic(Builder, Executable::Intrinsics::kThrowRef,
+                           LLVM::Type::getFunctionType(
+                               Context.VoidTy, {Context.Int64x2Ty}, false)),
+      {Ref});
+
+  Builder.createBr(getEHDispatchTarget());
+  setUnreachable();
+  Builder.positionAtEnd(
+      LLVM::BasicBlock::create(LLContext, F.Fn, "throw_ref.end"));
+}
+
+void FunctionCompiler::compilePendingCheck() noexcept {
+  auto PendingTag = Builder.createLoad(Context.Int8PtrTy, PendingExnTagPtr);
+  auto NotPendingBB =
+      LLVM::BasicBlock::create(LLContext, F.Fn, "no_pending_exn");
+  auto NotPending = Builder.createLikely(Builder.createIsNull(PendingTag));
+  Builder.createCondBr(NotPending, NotPendingBB, getEHDispatchTarget());
+  Builder.positionAtEnd(NotPendingBB);
+}
+
+LLVM::BasicBlock FunctionCompiler::getEHDispatchTarget() noexcept {
+  for (auto It = ControlStack.rbegin(); It != ControlStack.rend(); ++It) {
+    if (It->TryDispatchBB) {
+      return It->TryDispatchBB;
+    }
+  }
+  return getUnwindBB();
+}
+
+LLVM::BasicBlock FunctionCompiler::getUnwindBB() noexcept {
+  if (!UnwindBB) {
+    UnwindBB = LLVM::BasicBlock::create(LLContext, F.Fn, "exn.unwind");
+  }
+  return UnwindBB;
+}
+
 void FunctionCompiler::compileCallOp(const unsigned int FuncIndex) noexcept {
   const auto &FuncType =
       Context.CompositeTypes[std::get<0>(Context.Functions[FuncIndex])]
@@ -1229,6 +1431,8 @@ void FunctionCompiler::compileCallOp(const unsigned int FuncIndex) noexcept {
   } else {
     stackPush(Ret);
   }
+
+  compilePendingCheck();
 }
 
 void FunctionCompiler::compileIndirectCallOp(
@@ -1382,6 +1586,8 @@ void FunctionCompiler::compileIndirectCallOp(
     PHIRet.addIncoming(RetsVec[I], IsNullBB);
     stackPush(PHIRet);
   }
+
+  compilePendingCheck();
 }
 
 void FunctionCompiler::compileReturnCallOp(
@@ -1625,6 +1831,8 @@ void FunctionCompiler::compileCallRefOp(const unsigned int TypeIndex) noexcept {
     PHIRet.addIncoming(RetsVec[I], IsNullBB);
     stackPush(PHIRet);
   }
+
+  compilePendingCheck();
 }
 
 void FunctionCompiler::compileReturnCallRefOp(

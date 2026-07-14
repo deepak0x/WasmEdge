@@ -109,6 +109,7 @@ struct Compiler::CompileContext {
   std::vector<LLVM::Type> MemoryAddrTypes;
   std::vector<LLVM::Type> TableAddrTypes;
   std::vector<LLVM::Type> Globals;
+  std::vector<uint32_t> Tags;
   LLVM::Value IntrinsicsTable;
   LLVM::FunctionCallee Trap;
   CompileContext(LLVM::Context C, LLVM::Module &M,
@@ -203,6 +204,10 @@ struct Compiler::CompileContext {
   LLVM::Value getStopToken(LLVM::Builder &Builder,
                            LLVM::Value ExecCtx) noexcept {
     return Builder.createExtractValue(ExecCtx, 9);
+  }
+  LLVM::Value getPendingExceptionTag(LLVM::Builder &Builder,
+                                     LLVM::Value ExecCtx) noexcept {
+    return Builder.createExtractValue(ExecCtx, 11);
   }
   LLVM::FunctionCallee getIntrinsic(LLVM::Builder &Builder,
                                     Executable::Intrinsics Index,

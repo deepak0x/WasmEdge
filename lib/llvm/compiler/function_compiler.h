@@ -71,6 +71,18 @@ public:
   void updateGasAtTrap() noexcept;
 
 private:
+  void compileTryTableOp(const AST::Instruction &Instr) noexcept;
+
+  void compileThrowOp(const uint32_t TagIndex) noexcept;
+
+  void compileThrowRefOp() noexcept;
+
+  void compilePendingCheck() noexcept;
+
+  LLVM::BasicBlock getEHDispatchTarget() noexcept;
+
+  LLVM::BasicBlock getUnwindBB() noexcept;
+
   void compileCallOp(const unsigned int FuncIndex) noexcept;
 
   void compileIndirectCallOp(const uint32_t TableIndex,
@@ -246,6 +258,7 @@ private:
     LLVM::BasicBlock JumpBlock;
     LLVM::BasicBlock NextBlock;
     LLVM::BasicBlock ElseBlock;
+    LLVM::BasicBlock TryDispatchBB = {};
     std::vector<LLVM::Value> Args;
     std::pair<std::vector<ValType>, std::vector<ValType>> Type;
     std::vector<std::tuple<std::vector<LLVM::Value>, LLVM::BasicBlock>>
@@ -267,6 +280,8 @@ private:
   std::vector<Control> ControlStack;
   LLVM::FunctionCallee F;
   LLVM::Value ExecCtx;
+  LLVM::Value PendingExnTagPtr;
+  LLVM::BasicBlock UnwindBB;
   LLVM::Builder Builder;
 };
 

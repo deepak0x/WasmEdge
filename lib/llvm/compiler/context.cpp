@@ -67,6 +67,8 @@ Compiler::CompileContext::CompileContext(LLVM::Context C, LLVM::Module &M,
               Int32PtrTy,
               // ModuleInst
               Int8PtrTy,
+              // PendingExceptionTag
+              Int8PtrPtrTy,
           })),
       ExecCtxPtrTy(ExecCtxTy.getPointerTo()),
       IntrinsicsTableTy(LLVM::Type::getArrayType(
