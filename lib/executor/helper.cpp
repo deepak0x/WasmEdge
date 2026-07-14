@@ -24,6 +24,8 @@ Executor::SavedThreadLocal::SavedThreadLocal(
   This = &Ex;
 
   SavedExecutionContext = ExecutionContext;
+  ExecutionContext.PendingExceptionTag =
+      reinterpret_cast<void *const *>(&PendingException.Tag);
   ExecutionContext.StopToken = &Ex.StopToken;
   ExecutionContext.Memories = ModInst->MemoryPtrs.data();
   ExecutionContext.MemorySizes = ModInst->MemorySizePtrs.data();
@@ -51,7 +53,8 @@ Executor::SavedThreadLocal::~SavedThreadLocal() noexcept {
 Expect<AST::InstrView::iterator>
 Executor::enterFunction(Runtime::StackManager &StackMgr,
                         const Runtime::Instance::FunctionInstance &Func,
-                        const AST::InstrView::iterator RetIt, bool IsTailCall) {
+                        const AST::InstrView::iterator RetIt, bool IsTailCall,
+                        bool IsExnBoundary) {
   // RetIt: the return position when the entered function returns.
 
   // Check whether interruption occurred.
@@ -97,7 +100,8 @@ Executor::enterFunction(Runtime::StackManager &StackMgr,
                        RetIt,            // Return PC
                        ArgsN,            // Only args, no locals in stack
                        RetsN,            // Returns num
-                       IsTailCall        // For tail-call
+                       IsTailCall,       // For tail-call
+                       IsExnBoundary     // For exception boundary
     );
 
     // Do the statistics if the statistics turned on.
@@ -161,7 +165,8 @@ Executor::enterFunction(Runtime::StackManager &StackMgr,
                        RetIt,            // Return PC
                        ArgsN,            // Only args, no locals in stack
                        RetsN,            // Returns num
-                       IsTailCall        // For tail-call
+                       IsTailCall,       // For tail-call
+                       IsExnBoundary     // For exception boundary
     );
 
     // Prepare arguments.
@@ -208,6 +213,25 @@ Executor::enterFunction(Runtime::StackManager &StackMgr,
       return Unexpect(Err);
     }
 
+    if (unlikely(PendingException.Tag != nullptr)) {
+      // An exception thrown in the compiled function is escaping this frame.
+      // Discard the frame with the would-be results. When the frame is an
+      // exception boundary, hand the pending exception back to the native
+      // caller. Otherwise, the caller is in interpreter mode, so continue
+      // the handler walk in the caller's context.
+      const bool AtBoundary = StackMgr.isTopFrameExnBoundary();
+      AST::InstrView::iterator ResumePC = StackMgr.eraseTopFrame();
+      if (AtBoundary) {
+        return Unexpect(ErrCode::Value::UncaughtException);
+      }
+      auto &TagInst = *PendingException.Tag;
+      const auto *ExnInst = PendingException.Inst;
+      StackMgr.pushValVec(PendingException.Payload);
+      clearPendingException();
+      EXPECTED_TRY(throwException(StackMgr, TagInst, ResumePC, ExnInst));
+      return ResumePC + 1;
+    }
+
     // Push returns back to the stack.
     for (uint32_t I = 0; I < Rets.size(); ++I) {
       StackMgr.push(Rets[I]);
@@ -248,7 +272,8 @@ Executor::enterFunction(Runtime::StackManager &StackMgr,
                        RetIt - 1,                  // Return PC
                        ArgsN + Func.getLocalNum(), // Arguments num + local num
                        RetsN,                      // Returns num
-                       IsTailCall                  // For tail-call
+                       IsTailCall,                 // For tail-call
+                       IsExnBoundary               // For exception boundary
     );
 
     // For native function case, the continuation will be the start of the
@@ -312,6 +337,18 @@ Expect<void> Executor::throwException(
       PC = Handler->Try;
       return branchToLabel(StackMgr, C.Jump, PC);
     }
+  }
+  if (StackMgr.isTopFrameExnBoundary()) {
+    // The handler walk stopped at a frame entered from the native code.
+    // Record the exception as pending, restore the stack to the state
+    // before entering this segment, and let the native caller continue
+    // the propagation. The error is reported by the final consumer.
+    auto Payload = StackMgr.getTopSpan(AssocValSize);
+    PendingException.Tag = &TagInst;
+    PendingException.Inst = ExnInst;
+    PendingException.Payload.assign(Payload.begin(), Payload.end());
+    StackMgr.eraseTopFrame();
+    return Unexpect(ErrCode::Value::UncaughtException);
   }
   spdlog::error(ErrCode::Value::UncaughtException);
   return Unexpect(ErrCode::Value::UncaughtException);

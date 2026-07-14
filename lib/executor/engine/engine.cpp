@@ -49,7 +49,7 @@ Executor::runFunction(Runtime::StackManager &StackMgr,
 
   // Enter and execute function.
   Expect<void> Res =
-      enterFunction(StackMgr, Func, Func.getInstrs().end())
+      enterFunction(StackMgr, Func, Func.getInstrs().end(), false, true)
           .and_then([&](AST::InstrView::iterator StartIt) {
             // If not terminated, execute the instructions in interpreter mode.
             // For the entered AOT or host functions, `StartIt` is equal to
@@ -57,6 +57,14 @@ Executor::runFunction(Runtime::StackManager &StackMgr,
             // immediately.
             return execute(StackMgr, StartIt, Func.getInstrs().end());
           });
+
+  if (unlikely(!Res && Res.error() == ErrCode::Value::UncaughtException &&
+               PendingException.Tag != nullptr)) {
+    // The uncaught exception reaches the top level. Consume the pending
+    // state and report the error.
+    spdlog::error(ErrCode::Value::UncaughtException);
+    clearPendingException();
+  }
 
   if (Res) {
     spdlog::debug(" Execution succeeded."sv);

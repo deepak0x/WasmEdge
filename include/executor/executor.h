@@ -393,10 +393,13 @@ private:
   /// \name Helper Functions for block controls.
   /// @{
   /// Helper function for calling functions. Return the continuation iterator.
+  /// Set `IsExnBoundary` when entering from the native code to mark the
+  /// pushed frame as an exception boundary.
   Expect<AST::InstrView::iterator>
   enterFunction(Runtime::StackManager &StackMgr,
                 const Runtime::Instance::FunctionInstance &Func,
-                const AST::InstrView::iterator RetIt, bool IsTailCall = false);
+                const AST::InstrView::iterator RetIt, bool IsTailCall = false,
+                bool IsExnBoundary = false);
 
   /// Helper function for branching to label.
   Expect<void> branchToLabel(Runtime::StackManager &StackMgr,
@@ -1080,7 +1083,23 @@ public:
                                        const RefVariant Ref) noexcept;
   Expect<void *> proxyFuncGetFuncSymbol(Runtime::StackManager &StackMgr,
                                         const uint32_t FuncIdx) noexcept;
+  Expect<void> proxyThrow(Runtime::StackManager &StackMgr,
+                          const uint32_t TagIdx, const ValVariant *Vals,
+                          const uint32_t Num) noexcept;
+  Expect<void> proxyThrowRef(Runtime::StackManager &StackMgr,
+                             const RefVariant Ref) noexcept;
+  Expect<uint32_t> proxyCatchClause(Runtime::StackManager &StackMgr,
+                                    const uint32_t *Clauses, const uint32_t Num,
+                                    ValVariant *Out) noexcept;
   /// @}
+
+  /// Helper for the call proxies: enter the callee as an exception boundary
+  /// and intercept an escaped exception so that the pending state reaches
+  /// the post-call check in the compiled caller. Skip the results when an
+  /// exception is pending.
+  Expect<void> callFromCompiled(Runtime::StackManager &StackMgr,
+                                const Runtime::Instance::FunctionInstance &Func,
+                                ValVariant *Rets) noexcept;
 
   /// Callbacks for compiled modules
   static const Executable::IntrinsicsTable Intrinsics;
@@ -1105,6 +1124,7 @@ private:
     uint64_t GasLimit;
     std::atomic_uint32_t *StopToken;
     const void *ModuleInst;
+    void *const *PendingExceptionTag;
   };
 
   /// Restores thread local VM reference after overwriting it.
@@ -1122,12 +1142,31 @@ private:
     ExecutionContextStruct SavedExecutionContext;
   };
 
+  /// Pending exception state for propagating exceptions across the frames of
+  /// compiled functions and the native boundaries. A non-null `Tag` means an
+  /// exception is pending. `Inst` keeps the exception instance identity when
+  /// rethrown by `throw_ref`.
+  struct PendingExceptionStruct {
+    Runtime::Instance::TagInstance *Tag = nullptr;
+    const Runtime::Instance::ExceptionInstance *Inst = nullptr;
+    std::vector<ValVariant> Payload;
+  };
+
+  /// Reset the pending exception state.
+  static void clearPendingException() noexcept {
+    PendingException.Tag = nullptr;
+    PendingException.Inst = nullptr;
+    PendingException.Payload.clear();
+  }
+
   /// Pointer to current object.
   static thread_local Executor *This;
   /// Stack passed into compiled functions
   static thread_local Runtime::StackManager *CurrentStack;
   /// Execution context for compiled functions
   static thread_local ExecutionContextStruct ExecutionContext;
+  /// Pending exception for compiled functions
+  static thread_local PendingExceptionStruct PendingException;
   /// Record stack trace on error
   static thread_local std::array<uint32_t, 256> StackTrace;
   static thread_local size_t StackTraceSize;

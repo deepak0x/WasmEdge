@@ -12,6 +12,7 @@ namespace Executor {
 thread_local Executor *Executor::This = nullptr;
 thread_local Runtime::StackManager *Executor::CurrentStack = nullptr;
 thread_local Executor::ExecutionContextStruct Executor::ExecutionContext;
+thread_local Executor::PendingExceptionStruct Executor::PendingException;
 thread_local std::array<uint32_t, 256> Executor::StackTrace;
 thread_local size_t Executor::StackTraceSize = 0;
 
@@ -104,6 +105,9 @@ const Executable::IntrinsicsTable Executor::Intrinsics = {
     ENTRY(kTableGetFuncSymbol, proxyTableGetFuncSymbol),
     ENTRY(kRefGetFuncSymbol, proxyRefGetFuncSymbol),
     ENTRY(kFuncGetFuncSymbol, proxyFuncGetFuncSymbol),
+    ENTRY(kThrow, proxyThrow),
+    ENTRY(kThrowRef, proxyThrowRef),
+    ENTRY(kCatchClause, proxyCatchClause),
 #undef ENTRY
 };
 
@@ -116,6 +120,32 @@ Expect<void> Executor::proxyTrap(Runtime::StackManager &,
   return Unexpect(static_cast<ErrCategory>(Code >> 24), Code);
 }
 
+Expect<void>
+Executor::callFromCompiled(Runtime::StackManager &StackMgr,
+                           const Runtime::Instance::FunctionInstance &Func,
+                           ValVariant *Rets) noexcept {
+  auto Instrs = Func.getInstrs();
+  auto Res = enterFunction(StackMgr, Func, Instrs.end(), false, true)
+                 .and_then([&](AST::InstrView::iterator StartIt) {
+                   return execute(StackMgr, StartIt, Instrs.end());
+                 });
+  if (unlikely(!Res)) {
+    if (Res.error() == ErrCode::Value::UncaughtException &&
+        PendingException.Tag != nullptr) {
+      // An exception escaped the callee. Leave the pending state for the
+      // post-call check in the compiled caller and skip the results.
+      return {};
+    }
+    return Unexpect(Res.error());
+  }
+  const uint32_t ReturnsSize =
+      static_cast<uint32_t>(Func.getFuncType().getReturnTypes().size());
+  for (uint32_t I = 0; I < ReturnsSize; ++I) {
+    Rets[ReturnsSize - 1 - I] = StackMgr.pop();
+  }
+  return {};
+}
+
 Expect<void> Executor::proxyCall(Runtime::StackManager &StackMgr,
                                  const uint32_t FuncIdx, const ValVariant *Args,
                                  ValVariant *Rets) noexcept {
@@ -125,21 +155,12 @@ Expect<void> Executor::proxyCall(Runtime::StackManager &StackMgr,
   const auto &FuncType = FuncInst->getFuncType();
   const uint32_t ParamsSize =
       static_cast<uint32_t>(FuncType.getParamTypes().size());
-  const uint32_t ReturnsSize =
-      static_cast<uint32_t>(FuncType.getReturnTypes().size());
 
   for (uint32_t I = 0; I < ParamsSize; ++I) {
     StackMgr.push(Args[I]);
   }
 
-  auto Instrs = FuncInst->getInstrs();
-  EXPECTED_TRY(auto StartIt, enterFunction(StackMgr, *FuncInst, Instrs.end()));
-  EXPECTED_TRY(execute(StackMgr, StartIt, Instrs.end()));
-
-  for (uint32_t I = 0; I < ReturnsSize; ++I) {
-    Rets[ReturnsSize - 1 - I] = StackMgr.pop();
-  }
-  return {};
+  return callFromCompiled(StackMgr, *FuncInst, Rets);
 }
 
 Expect<void> Executor::proxyCallIndirect(Runtime::StackManager &StackMgr,
@@ -188,21 +209,12 @@ Expect<void> Executor::proxyCallIndirect(Runtime::StackManager &StackMgr,
   const auto &FuncType = FuncInst->getFuncType();
   const uint32_t ParamsSize =
       static_cast<uint32_t>(FuncType.getParamTypes().size());
-  const uint32_t ReturnsSize =
-      static_cast<uint32_t>(FuncType.getReturnTypes().size());
 
   for (uint32_t I = 0; I < ParamsSize; ++I) {
     StackMgr.push(Args[I]);
   }
 
-  auto Instrs = FuncInst->getInstrs();
-  EXPECTED_TRY(auto StartIt, enterFunction(StackMgr, *FuncInst, Instrs.end()));
-  EXPECTED_TRY(execute(StackMgr, StartIt, Instrs.end()));
-
-  for (uint32_t I = 0; I < ReturnsSize; ++I) {
-    Rets[ReturnsSize - 1 - I] = StackMgr.pop();
-  }
-  return {};
+  return callFromCompiled(StackMgr, *FuncInst, Rets);
 }
 
 Expect<void> Executor::proxyCallRef(Runtime::StackManager &StackMgr,
@@ -219,22 +231,12 @@ Expect<void> Executor::proxyCallRef(Runtime::StackManager &StackMgr,
   const auto &FuncType = FuncInst->getFuncType();
   const uint32_t ParamsSize =
       static_cast<uint32_t>(FuncType.getParamTypes().size());
-  const uint32_t ReturnsSize =
-      static_cast<uint32_t>(FuncType.getReturnTypes().size());
 
   for (uint32_t I = 0; I < ParamsSize; ++I) {
     StackMgr.push(Args[I]);
   }
 
-  auto Instrs = FuncInst->getInstrs();
-  EXPECTED_TRY(auto StartIt, enterFunction(StackMgr, *FuncInst, Instrs.end()));
-  EXPECTED_TRY(execute(StackMgr, StartIt, Instrs.end()));
-
-  for (uint32_t I = 0; I < ReturnsSize; ++I) {
-    Rets[ReturnsSize - 1 - I] = StackMgr.pop();
-  }
-
-  return {};
+  return callFromCompiled(StackMgr, *FuncInst, Rets);
 }
 
 Expect<RefVariant> Executor::proxyRefFunc(Runtime::StackManager &StackMgr,
@@ -665,6 +667,62 @@ Executor::proxyFuncGetFuncSymbol(Runtime::StackManager &StackMgr,
     return nullptr;
   }
   return FuncInst->getSymbol().get();
+}
+
+Expect<void> Executor::proxyThrow(Runtime::StackManager &StackMgr,
+                                  const uint32_t TagIdx, const ValVariant *Vals,
+                                  const uint32_t Num) noexcept {
+  auto *TagInst = getTagInstByIdx(StackMgr, TagIdx);
+  assuming(TagInst);
+  assuming(TagInst->getTagType().getAssocValSize() == Num);
+  PendingException.Tag = TagInst;
+  PendingException.Inst = nullptr;
+  PendingException.Payload.assign(Vals, Vals + Num);
+  return {};
+}
+
+Expect<void> Executor::proxyThrowRef(Runtime::StackManager &,
+                                     const RefVariant Ref) noexcept {
+  const auto *ExnInst = Ref.getPtr<Runtime::Instance::ExceptionInstance>();
+  if (unlikely(ExnInst == nullptr)) {
+    return Unexpect(ErrCode::Value::AccessNullException);
+  }
+  PendingException.Tag = ExnInst->getTag();
+  PendingException.Inst = ExnInst;
+  PendingException.Payload = ExnInst->getPayload();
+  return {};
+}
+
+Expect<uint32_t> Executor::proxyCatchClause(Runtime::StackManager &StackMgr,
+                                            const uint32_t *Clauses,
+                                            const uint32_t Num,
+                                            ValVariant *Out) noexcept {
+  auto *Tag = PendingException.Tag;
+  assuming(Tag);
+  const uint32_t Arity = Tag->getTagType().getAssocValSize();
+  for (uint32_t I = 0; I < Num; ++I) {
+    const uint32_t Flags = Clauses[2 * I];
+    const uint32_t TagIdx = Clauses[2 * I + 1];
+    const bool IsRef = (Flags & 0x01U) != 0;
+    const bool IsAll = (Flags & 0x02U) != 0;
+    if (!IsAll && getTagInstByIdx(StackMgr, TagIdx) != Tag) {
+      continue;
+    }
+    std::copy_n(PendingException.Payload.begin(), Arity, Out);
+    if (IsRef) {
+      const auto *Inst = PendingException.Inst;
+      if (Inst == nullptr) {
+        auto *ModInst = const_cast<Runtime::Instance::ModuleInstance *>(
+            StackMgr.getModule());
+        assuming(ModInst);
+        Inst = ModInst->newException(Tag, std::move(PendingException.Payload));
+      }
+      Out[Arity] = RefVariant(ValType(TypeCode::Ref, TypeCode::ExnRef), Inst);
+    }
+    clearPendingException();
+    return I;
+  }
+  return Num;
 }
 
 } // namespace Executor
